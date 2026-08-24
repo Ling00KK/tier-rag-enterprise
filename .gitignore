@@ -1,0 +1,12 @@
+.env
+source/*
+!source/.gitkeep
+cache/
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+*.faiss
+*.npy
+*.log

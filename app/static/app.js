@@ -1,0 +1,11 @@
+const login=document.querySelector('#login'),app=document.querySelector('#app'),messages=document.querySelector('#messages');
+async function api(path,options={}){const res=await fetch(path,{headers:{'Content-Type':'application/json'},...options});const data=await res.json().catch(()=>({}));if(!res.ok)throw new Error(data.detail||'请求失败');return data}
+function show(auth){login.classList.toggle('hidden',auth);app.classList.toggle('hidden',!auth)}
+api('/api/session').then(x=>show(x.authenticated)).catch(()=>show(false));
+document.querySelector('#login-form').onsubmit=async e=>{e.preventDefault();const error=document.querySelector('#login-error');error.textContent='';try{await api('/api/login',{method:'POST',body:JSON.stringify({username:username.value,password:password.value})});password.value='';show(true)}catch(x){error.textContent=x.message}};
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function add(role,text,sources=[],note=''){document.querySelector('.welcome')?.remove();const el=document.createElement('div');el.className=`message ${role}`;let extra=note?`<div class="version">${esc(note)}</div>`:'';if(sources.length){extra+=`<details class="sources"><summary>查看资料来源</summary>${sources.map(s=>`<div class="source"><b>${esc(s.file_name)}</b> · ${esc(s.location)}<small>${esc(s.excerpt)}</small></div>`).join('')}</details>`}el.innerHTML=`<div class="bubble">${esc(text)}</div>${extra}`;messages.append(el);messages.scrollTop=messages.scrollHeight;return el}
+document.querySelector('#ask-form').onsubmit=async e=>{e.preventDefault();const q=question.value.trim();if(!q)return;add('user',q);question.value='';const waiting=add('assistant','正在检索资料并组织答案……');waiting.classList.add('loading');try{const x=await api('/api/ask',{method:'POST',body:JSON.stringify({question:q})});waiting.remove();add('assistant',x.answer,x.sources,x.version_note)}catch(x){waiting.remove();add('assistant',x.message)}};
+question.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.querySelector('#ask-form').requestSubmit()}};
+document.querySelector('#clear').onclick=()=>{messages.innerHTML='<div class="welcome"><h2>今天想查询什么？</h2><p>例如：QMT 有哪些交易功能？</p></div>'};
+document.querySelector('#logout').onclick=async()=>{await api('/api/logout',{method:'POST'});show(false)};

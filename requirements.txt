@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+itsdangerous
+pymupdf
+faiss-cpu
+numpy
+sentence-transformers
+openai
+python-docx
+openpyxl
+pandas
+xlrd
+pillow
+pytesseract

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>企业知识库助手</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <section id="login" class="login-shell hidden">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark">T</div>
+      <h1>企业知识库助手</h1>
+      <p>登录后查询企业内部资料</p>
+      <label>用户名<input id="username" autocomplete="username" required></label>
+      <label>密码<input id="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">安全登录</button>
+      <div id="login-error" class="error"></div>
+    </form>
+  </section>
+
+  <main id="app" class="app-shell hidden">
+    <aside>
+      <div class="logo"><span>T</span><div><b>企业知识库</b><small>智能资料检索</small></div></div>
+      <div class="status"><i></i><span id="status-text">服务已连接</span></div>
+      <div class="aside-copy"><b>支持格式</b><p>PDF · Word · Excel<br>文本 · Markdown · 图片 OCR</p></div>
+      <button id="clear" class="ghost">清空对话</button>
+      <button id="logout" class="ghost">退出登录</button>
+    </aside>
+    <section class="workspace">
+      <header><div><h1>企业知识库助手</h1><p>答案源于内部资料，并提供可核对的出处</p></div><span class="secure">● 内网安全访问</span></header>
+      <div id="messages" class="messages">
+        <div class="welcome"><h2>今天想查询什么？</h2><p>例如：QMT 有哪些交易功能？</p></div>
+      </div>
+      <form id="ask-form" class="composer">
+        <textarea id="question" rows="1" placeholder="输入你的问题，按 Enter 发送……" required></textarea>
+        <button type="submit" aria-label="发送">发送</button>
+      </form>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
