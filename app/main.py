@@ -119,7 +119,9 @@ def home():
 
 @app.get("/api/session")
 def session_status(request: Request):
-    return {"authenticated": bool(request.session.get("authenticated")), "user": request.session.get("user")}
+    authenticated = bool(request.session.get("authenticated"))
+    user = current_user(request) if authenticated else None
+    return {"authenticated": authenticated, "user": user}
 
 
 @app.post("/api/login")
