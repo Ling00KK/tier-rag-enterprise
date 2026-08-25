@@ -69,6 +69,26 @@ uvicorn app.main:app --host 0.0.0.0 --port 8501
 
 CPU 服务器建议安装 PyTorch CPU 版，以避免下载不需要的 CUDA 组件。生产环境建议通过 systemd 托管进程。
 
+## 部门权限演示
+
+项目提供可重复运行的虚构数据脚本，用于创建人事部、财务部两个演示员工，以及公共、人事专属、财务专属三份演示手册：
+
+```bash
+python scripts/seed_permission_demo.py \
+  --hr-password '自行设置的人事测试密码' \
+  --finance-password '自行设置的财务测试密码'
+```
+
+同步知识库后，可使用真实 HTTP 问答接口执行交叉权限测试：
+
+```bash
+python scripts/test_permission_demo_live.py \
+  --hr-password '自行设置的人事测试密码' \
+  --finance-password '自行设置的财务测试密码'
+```
+
+测试会确认两个账号都能看到公共手册，只能检索本部门专属手册，并且无法从问答接口获得另一个部门的演示识别词。脚本中的手册内容完全虚构，不代表公司真实制度。
+
 ## 主要配置
 
 | 配置项 | 用途 |
