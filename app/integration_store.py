@@ -91,6 +91,19 @@ def online_sources():
     return sources
 
 
+def delete_online_source(provider, name):
+    data = _read()
+    before = len(data["integrations"])
+    data["integrations"] = [
+        item for item in data["integrations"]
+        if not (item.get("provider") == provider and item.get("name") == name)
+    ]
+    if len(data["integrations"]) == before:
+        return False
+    _write(data)
+    return True
+
+
 def s3_config(config_id=None):
     items = [item for item in _read()["integrations"] if item["provider"] == "s3"]
     item = next((value for value in items if value["id"] == config_id), None) if config_id else (items[0] if items else None)

@@ -14,8 +14,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .rag_engine import RagEngine
 from .document_loader import SUPPORTED_EXTENSIONS
-from .integration_store import list_integrations, save_integration, s3_config
-from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, save_user, set_document_access
+from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
+from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -93,6 +93,10 @@ class DocumentAccessRequest(BaseModel):
     file_name: str = Field(min_length=1, max_length=255)
     access_scope: str
     departments: list[str] = Field(default_factory=list)
+
+
+class DeleteDocumentRequest(BaseModel):
+    document_id: str = Field(min_length=16, max_length=64)
 
 
 def require_login(request):
@@ -283,7 +287,9 @@ def _library_items(user):
         name = item["file_name"]
         if not can_access(name, user, item):
             continue
-        record = grouped.setdefault(name, {
+        file_path = str(item["file_path"])
+        record = grouped.setdefault(file_path, {
+            "document_id": hashlib.sha256(file_path.encode()).hexdigest()[:24],
             "file_name": name,
             "file_type": Path(name).suffix.lower().lstrip(".") or "在线文档",
             "version_label": item.get("version_label"),
@@ -324,3 +330,35 @@ def update_document_access(data: DocumentAccessRequest, request: Request):
         return {"ok": True}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/admin/documents/delete")
+def delete_document(data: DeleteDocumentRequest, request: Request):
+    require_admin(request)
+    engine.load()
+    sources = {}
+    for item in engine.documents:
+        path = str(item["file_path"])
+        sources.setdefault(hashlib.sha256(path.encode()).hexdigest()[:24], item)
+    item = sources.get(data.document_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="没有找到该资料，可能已经被删除")
+    file_path = str(item["file_path"])
+    name = item["file_name"]
+    if file_path.startswith("online://"):
+        parts = file_path.split("/", 3)
+        provider = parts[2] if len(parts) > 2 else ""
+        if not delete_online_source(provider, name):
+            raise HTTPException(status_code=404, detail="没有找到对应的在线资料连接")
+    else:
+        target = Path(file_path).resolve()
+        root = engine.source_dir.resolve()
+        if not target.is_relative_to(root) or not target.is_file():
+            raise HTTPException(status_code=400, detail="资料文件路径无效")
+        target.unlink()
+    remove_document_access(name)
+    try:
+        engine.load(force=True)
+    except RuntimeError:
+        engine.clear()
+    return {"ok": True, "file_name": name}

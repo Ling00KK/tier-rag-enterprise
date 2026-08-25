@@ -94,6 +94,14 @@ class RagEngine:
             "sync_failures": self.sync_failures,
         }
 
+    def clear(self):
+        with self._lock:
+            self.documents = []
+            self.chunks = []
+            self.vectors = np.empty((0, 0), dtype="float32")
+            self.ready = False
+            self.last_sync_at = 0.0
+
     def ask(self, question, user):
         self.load()
         permitted = [chunk for chunk in self.chunks if can_access(chunk["file_name"], user, chunk)]

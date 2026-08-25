@@ -107,6 +107,12 @@ def get_document_access(name, item=None):
         "departments": item.get("departments") or [],
     }
 
+def remove_document_access(name):
+    with _lock:
+        data = _read()
+        if data["documents"].pop(name, None) is not None:
+            _write(data)
+
 def can_access(name, user, item=None):
     if user.get("role") == "admin":
         return True
