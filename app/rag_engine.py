@@ -5,6 +5,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from collections import Counter
 from pathlib import Path
 
@@ -158,6 +159,17 @@ class RagEngine:
         questions = row[0]
         return {"questions": questions, "answered": row[1], "answer_rate": round(row[1] / questions * 100, 1) if questions else None, "average_latency_ms": round(row[2]), "average_best_score": round(row[3], 4), "active_users": users, "days": days}
 
+    def metrics_trend(self, days=14):
+        since = time.time() - days * 86400
+        with self._database() as database:
+            rows = database.execute("SELECT date(created_at, 'unixepoch', 'localtime') day, COUNT(*) questions, SUM(answered) answered, AVG(latency_ms) latency FROM retrieval_events WHERE created_at >= ? GROUP BY day ORDER BY day", (since,)).fetchall()
+        return [{"day": row[0], "questions": row[1], "answered": row[2] or 0, "latency_ms": round(row[3] or 0)} for row in rows]
+
+    def failed_questions(self, limit=50):
+        with self._database() as database:
+            rows = database.execute("SELECT created_at, username, question_hash, best_score, latency_ms FROM retrieval_events WHERE answered=0 ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [{"created_at": row[0], "username": row[1], "question_hash": row[2], "best_score": row[3], "latency_ms": row[4]} for row in rows]
+
     def clear(self):
         with self._lock:
             self.documents, self.chunks = [], []
@@ -203,11 +215,11 @@ class RagEngine:
         top_results = retrieval["results"]
         if not top_results:
             self._record_metric(user, question, retrieval["permitted_chunks"], 0, retrieval["best_score"], False, started)
-            return {"answer": "未在资料中找到足够信息。", "sources": [], "version_note": retrieval["version_note"]}
+            return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": "未在资料中找到足够信息。", "sources": [], "version_note": retrieval["version_note"]}
         top_results.sort(key=lambda item: item.get("effective_order", (0,)))
         context = "\n\n".join(f"[来源：{item['file_name']}，{item['location']}，类型：{'增量修订' if item.get('document_kind') == 'amendment' else '完整版本'}]\n{item['text']}" for item in top_results)
         response = self.client.chat.completions.create(model=self.model, messages=[{"role": "system", "content": "你是企业内部文档答疑助手。只能依据检索资料回答，不得猜测或编造。资料按生效顺序从旧到新排列；同一事项冲突时，后面的增量修订覆盖前面的完整版本或旧修订，未被后续修订的内容继续有效。资料不足时只回答：未在资料中找到足够信息。使用简洁中文回答，不要编造来源。"}, {"role": "user", "content": f"用户问题：\n{question}\n\n检索资料：\n{context}"}], temperature=0.1, max_tokens=500)
         answer = (response.choices[0].message.content or "未在资料中找到足够信息。").strip()
         sources = [{"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500], "version_label": item.get("version_label"), "document_kind": item.get("document_kind", "full")} for item in top_results]
         self._record_metric(user, question, retrieval["permitted_chunks"], retrieval["candidate_count"], retrieval["best_score"], answer != "未在资料中找到足够信息。", started)
-        return {"answer": answer, "sources": sources, "version_note": retrieval["version_note"]}
+        return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": answer, "sources": sources, "version_note": retrieval["version_note"]}

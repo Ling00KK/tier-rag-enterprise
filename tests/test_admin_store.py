@@ -12,6 +12,12 @@ def test_audit_and_evaluation_storage(tmp_path, monkeypatch):
     admin_store.save_evaluation_run(case_id, True, ["报销制度.pdf"], 0.99, 120)
     summary = admin_store.evaluation_summary()
     assert summary["runs"] == 1 and summary["pass_rate"] == 100.0
+    assert admin_store.update_evaluation_case(case_id, "新问题", "新版.pdf", False)
+    assert admin_store.list_evaluation_cases()[0]["enabled"] == 0
+    admin_store.save_feedback("answer-1234567890", "tier", "a" * 64, False, "没有回答到")
+    feedback = admin_store.feedback_summary()
+    assert feedback["total"] == 1 and feedback["helpful_rate"] == 0.0
+    assert admin_store.delete_evaluation_case(case_id)
 
 
 if __name__ == "__main__":

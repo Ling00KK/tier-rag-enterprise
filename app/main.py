@@ -7,7 +7,10 @@ from collections import defaultdict
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
+import csv
+import io
+import difflib
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -16,7 +19,7 @@ from .rag_engine import RagEngine
 from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
 from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
-from .admin_store import add_evaluation_case, evaluation_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run
+from .admin_store import add_evaluation_case, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -103,6 +106,14 @@ class DeleteDocumentRequest(BaseModel):
 class EvaluationCaseRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
     expected_file: str = Field(min_length=1, max_length=255)
+    enabled: bool = True
+
+
+class FeedbackRequest(BaseModel):
+    answer_id: str = Field(min_length=16, max_length=64)
+    question_hash: str = Field(min_length=64, max_length=64)
+    helpful: bool
+    comment: str = Field(default="", max_length=500)
 
 
 def require_login(request):
@@ -264,6 +275,14 @@ def ask(data: AskRequest, request: Request):
         raise HTTPException(status_code=503, detail=f"知识库暂时不可用：{error}") from error
 
 
+@app.post("/api/feedback")
+def answer_feedback(data: FeedbackRequest, request: Request):
+    user = current_user(request)
+    save_feedback(data.answer_id, user["username"], data.question_hash, data.helpful, data.comment)
+    log_event(user["username"], "answer_feedback", result="helpful" if data.helpful else "unhelpful")
+    return {"ok": True}
+
+
 @app.get("/api/admin/access")
 def access_data(request: Request):
     require_admin(request)
@@ -383,13 +402,30 @@ def delete_document(data: DeleteDocumentRequest, request: Request):
 @app.get("/api/admin/dashboard")
 def dashboard(request: Request):
     require_admin(request)
-    return {"retrieval": engine.metrics_summary(), "evaluation": evaluation_summary(), "knowledge": engine.status(), "recent_audit": list_audit(8)}
+    if not engine.ready:
+        try:
+            engine.load()
+        except Exception as error:
+            log_event("system", "dashboard_load", result="failed", details={"error": str(error)})
+    return {"retrieval": engine.metrics_summary(), "trend": engine.metrics_trend(), "failed_questions": engine.failed_questions(), "feedback": feedback_summary(), "evaluation": evaluation_summary(), "knowledge": engine.status(), "recent_audit": list_audit(8)}
 
 
 @app.get("/api/admin/audit")
 def audit(request: Request, limit: int = 100):
     require_admin(request)
     return {"items": list_audit(limit)}
+
+
+@app.get("/api/admin/audit/export")
+def export_audit(request: Request):
+    user = require_admin(request)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["时间戳", "用户", "事件", "对象", "结果", "详情"])
+    for item in list_audit(500):
+        writer.writerow([item["created_at"], item["username"], item["event_type"], item["target"], item["result"], str(item["details"])])
+    log_event(user["username"], "audit_export")
+    return StreamingResponse(iter(["\ufeff" + output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=audit.csv"})
 
 
 @app.get("/api/admin/evaluations")
@@ -404,6 +440,37 @@ def create_evaluation(data: EvaluationCaseRequest, request: Request):
     case_id = add_evaluation_case(data.question, data.expected_file)
     log_event(user["username"], "evaluation_case_add", data.expected_file)
     return {"ok": True, "id": case_id}
+
+
+@app.put("/api/admin/evaluations/{case_id}")
+def edit_evaluation(case_id: str, data: EvaluationCaseRequest, request: Request):
+    user = require_admin(request)
+    if not update_evaluation_case(case_id, data.question, data.expected_file, data.enabled):
+        raise HTTPException(status_code=404, detail="评测题不存在")
+    log_event(user["username"], "evaluation_case_update", data.expected_file)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/evaluations/{case_id}")
+def remove_evaluation(case_id: str, request: Request):
+    user = require_admin(request)
+    if not delete_evaluation_case(case_id):
+        raise HTTPException(status_code=404, detail="评测题不存在")
+    log_event(user["username"], "evaluation_case_delete", case_id)
+    return {"ok": True}
+
+
+@app.get("/api/admin/versions/diff")
+def version_diff(request: Request, first: str, second: str):
+    require_admin(request)
+    engine.load()
+    def content(name):
+        return "\n".join(item["text"] for item in engine.documents if item["file_name"] == name)
+    before, after = content(first), content(second)
+    if not before or not after:
+        raise HTTPException(status_code=404, detail="找不到用于比较的文档")
+    lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(), fromfile=first, tofile=second, lineterm=""))
+    return {"first": first, "second": second, "changes": lines[:1000], "truncated": len(lines) > 1000}
 
 
 @app.post("/api/admin/evaluations/run")

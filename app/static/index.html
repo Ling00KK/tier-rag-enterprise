@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/library.css?v=20260825-5">
   <link rel="stylesheet" href="/static/delete.css?v=20260825-6">
   <link rel="stylesheet" href="/static/admin.css?v=20260825-7">
+  <link rel="stylesheet" href="/static/admin-extra.css?v=20260825-1">
 </head>
 <body>
   <section id="login" class="login-shell hidden">
@@ -86,7 +87,7 @@
   <div id="library-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-card library-card">
       <div class="modal-head"><div><h2>企业资料库</h2><p>这里只显示你有权限查阅的资料</p></div><button id="close-library" class="icon-button">×</button></div>
-      <div class="library-toolbar"><input id="library-search" placeholder="搜索资料名称、格式或版本"><span id="library-count"></span></div>
+      <div class="library-toolbar"><input id="library-search" placeholder="搜索资料名称、格式或版本"><button id="compare-versions" class="hidden">对比选中的两个版本</button><span id="library-count"></span></div>
       <div id="library-list" class="library-list"></div>
       <div id="library-empty" class="library-empty hidden">没有找到可查阅的资料</div>
     </div>
@@ -95,11 +96,11 @@
     <div class="modal-card admin-center-card">
       <div class="modal-head"><div><h2>管理数据中心</h2><p>查看运行质量、操作记录和检索评测</p></div><button id="close-admin" class="icon-button">×</button></div>
       <div class="admin-tabs"><button class="active" data-admin-tab="overview">运行看板</button><button data-admin-tab="audit">操作审计</button><button data-admin-tab="evaluation">RAG 评测</button></div>
-      <section class="admin-panel" data-admin-panel="overview"><div id="metric-cards" class="metric-cards"></div><h3>最近操作</h3><div id="recent-audit" class="audit-list"></div></section>
-      <section class="admin-panel hidden" data-admin-panel="audit"><div class="panel-heading"><h3>操作审计日志</h3><button id="refresh-audit">刷新</button></div><div id="audit-list" class="audit-list"></div></section>
+      <section class="admin-panel" data-admin-panel="overview"><div id="metric-cards" class="metric-cards"></div><div class="insight-grid"><div><h3>近 14 天提问趋势</h3><div id="trend-chart" class="trend-chart"></div></div><div><h3>答案反馈</h3><div id="feedback-summary"></div></div></div><h3>未找到答案的检索</h3><div id="failed-questions" class="audit-list"></div><h3>最近操作</h3><div id="recent-audit" class="audit-list"></div></section>
+      <section class="admin-panel hidden" data-admin-panel="audit"><div class="panel-heading"><h3>操作审计日志</h3><div><a class="export-button" href="/api/admin/audit/export">导出 CSV</a><button id="refresh-audit">刷新</button></div></div><div id="audit-list" class="audit-list"></div></section>
       <section class="admin-panel hidden" data-admin-panel="evaluation"><div class="evaluation-tools"><form id="evaluation-form"><input name="question" placeholder="标准测试问题" required><input name="expected_file" placeholder="期望命中的文件名" required><button>添加测试题</button></form><button id="run-evaluations">运行全部评测</button></div><div id="evaluation-summary"></div><div id="evaluation-list" class="evaluation-list"></div><div id="evaluation-results"></div></section>
     </div>
   </div>
-  <script src="/static/app.js?v=20260825-7"></script>
+  <script src="/static/app.js?v=20260825-8"></script>
 </body>
 </html>
