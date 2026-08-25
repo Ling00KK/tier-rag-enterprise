@@ -150,20 +150,26 @@ class RagEngine:
     def status(self):
         return {"ready": self.ready, "files": len({item["file_path"] for item in self.documents}) if self.ready else 0, "chunks": len(self.chunks) if self.ready else 0, "model": self.model, "last_sync_at": self.last_sync_at or None, "refresh_seconds": self.refresh_seconds, "sync_failures": self.sync_failures, "retrieval": "hybrid_bm25_vector_rerank", "vector_cache_hits": self.cache_hits, "vector_cache_misses": self.cache_misses}
 
+    def metrics_summary(self, days=30):
+        since = time.time() - days * 86400
+        with self._database() as database:
+            row = database.execute("SELECT COUNT(*) questions, COALESCE(SUM(answered), 0) answered, COALESCE(AVG(latency_ms), 0) latency, COALESCE(AVG(best_score), 0) score FROM retrieval_events WHERE created_at >= ?", (since,)).fetchone()
+            users = database.execute("SELECT COUNT(DISTINCT username) FROM retrieval_events WHERE created_at >= ?", (since,)).fetchone()[0]
+        questions = row[0]
+        return {"questions": questions, "answered": row[1], "answer_rate": round(row[1] / questions * 100, 1) if questions else None, "average_latency_ms": round(row[2]), "average_best_score": round(row[3], 4), "active_users": users, "days": days}
+
     def clear(self):
         with self._lock:
             self.documents, self.chunks = [], []
             self.vectors = np.empty((0, 0), dtype="float32")
             self.ready, self.last_sync_at = False, 0.0
 
-    def ask(self, question, user):
-        started = time.time()
+    def retrieve(self, question, user):
         self.load()
         permitted = [chunk for chunk in self.chunks if can_access(chunk["file_name"], user, chunk)]
         search_chunks, version_note = filter_chunks_for_question(permitted, question)
         if not search_chunks:
-            self._record_metric(user, question, 0, 0, 0, False, started)
-            return {"answer": "未在资料中找到足够信息。", "sources": [], "version_note": version_note}
+            return {"results": [], "version_note": version_note, "permitted_chunks": 0, "best_score": 0.0}
         subset = self.vectors[[chunk["_vector_id"] for chunk in search_chunks]]
         index = faiss.IndexFlatIP(subset.shape[1])
         index.add(subset)
@@ -188,13 +194,20 @@ class RagEngine:
         candidates.sort(key=lambda item: item["rerank_score"], reverse=True)
         best_score = candidates[0]["rerank_score"] if candidates else 0.0
         if not candidates or best_score < self.rerank_min_score:
-            self._record_metric(user, question, len(search_chunks), len(candidates), best_score, False, started)
-            return {"answer": "未在资料中找到足够信息。", "sources": [], "version_note": version_note + "；相关度不足，已停止生成"}
-        top_results = candidates[:3]
+            return {"results": [], "version_note": version_note + "；相关度不足，已停止生成", "permitted_chunks": len(search_chunks), "best_score": best_score}
+        return {"results": candidates[:3], "version_note": version_note, "permitted_chunks": len(search_chunks), "best_score": best_score, "candidate_count": len(candidates)}
+
+    def ask(self, question, user):
+        started = time.time()
+        retrieval = self.retrieve(question, user)
+        top_results = retrieval["results"]
+        if not top_results:
+            self._record_metric(user, question, retrieval["permitted_chunks"], 0, retrieval["best_score"], False, started)
+            return {"answer": "未在资料中找到足够信息。", "sources": [], "version_note": retrieval["version_note"]}
         top_results.sort(key=lambda item: item.get("effective_order", (0,)))
         context = "\n\n".join(f"[来源：{item['file_name']}，{item['location']}，类型：{'增量修订' if item.get('document_kind') == 'amendment' else '完整版本'}]\n{item['text']}" for item in top_results)
         response = self.client.chat.completions.create(model=self.model, messages=[{"role": "system", "content": "你是企业内部文档答疑助手。只能依据检索资料回答，不得猜测或编造。资料按生效顺序从旧到新排列；同一事项冲突时，后面的增量修订覆盖前面的完整版本或旧修订，未被后续修订的内容继续有效。资料不足时只回答：未在资料中找到足够信息。使用简洁中文回答，不要编造来源。"}, {"role": "user", "content": f"用户问题：\n{question}\n\n检索资料：\n{context}"}], temperature=0.1, max_tokens=500)
         answer = (response.choices[0].message.content or "未在资料中找到足够信息。").strip()
         sources = [{"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500], "version_label": item.get("version_label"), "document_kind": item.get("document_kind", "full")} for item in top_results]
-        self._record_metric(user, question, len(search_chunks), len(candidates), best_score, answer != "未在资料中找到足够信息。", started)
-        return {"answer": answer, "sources": sources, "version_note": version_note}
+        self._record_metric(user, question, retrieval["permitted_chunks"], retrieval["candidate_count"], retrieval["best_score"], answer != "未在资料中找到足够信息。", started)
+        return {"answer": answer, "sources": sources, "version_note": retrieval["version_note"]}

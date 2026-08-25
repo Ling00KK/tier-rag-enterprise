@@ -16,6 +16,7 @@ from .rag_engine import RagEngine
 from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
 from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
+from .admin_store import add_evaluation_case, evaluation_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -99,6 +100,11 @@ class DeleteDocumentRequest(BaseModel):
     document_id: str = Field(min_length=16, max_length=64)
 
 
+class EvaluationCaseRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=1000)
+    expected_file: str = Field(min_length=1, max_length=255)
+
+
 def require_login(request):
     if not request.session.get("authenticated"):
         raise HTTPException(status_code=401, detail="请先登录")
@@ -140,16 +146,19 @@ def login(data: LoginRequest, request: Request):
     now = time.time()
     attempts[address] = [stamp for stamp in attempts[address] if now - stamp < 60]
     if len(attempts[address]) >= 5:
+        log_event(data.username, "login", result="rate_limited")
         raise HTTPException(status_code=429, detail="尝试次数过多，请一分钟后重试")
     user = authenticate(data.username, data.password, USERNAME, PASSWORD_SALT, PASSWORD_HASH)
     if not user:
         attempts[address].append(now)
+        log_event(data.username, "login", result="failed")
         raise HTTPException(status_code=401, detail="用户名或密码不正确")
     attempts.pop(address, None)
     request.session.clear()
     request.session["authenticated"] = True
     request.session["username"] = user["username"]
     request.session["user"] = user
+    log_event(user["username"], "login", result="success")
     return {"ok": True, "user": user}
 
 
@@ -167,9 +176,10 @@ def status(request: Request):
 
 @app.post("/api/sync")
 def sync_knowledge_base(request: Request):
-    require_admin(request)
+    user = require_admin(request)
     try:
         engine.load(force=True)
+        log_event(user["username"], "knowledge_sync", details=engine.status())
         return {"ok": True, **engine.status()}
     except Exception as error:
         raise HTTPException(status_code=503, detail=f"知识库同步失败：{error}") from error
@@ -183,9 +193,10 @@ def integrations(request: Request):
 
 @app.post("/api/integrations")
 def add_integration(data: IntegrationRequest, request: Request):
-    require_admin(request)
+    user = require_admin(request)
     try:
         item_id = save_integration(data.model_dump(exclude_none=True))
+        log_event(user["username"], "integration_save", data.name, details={"provider": data.provider, "access_scope": data.access_scope})
         return {"ok": True, "id": item_id}
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"保存连接失败：{error}") from error
@@ -200,7 +211,7 @@ async def upload_document(
     access_scope: str = Form("public"),
     departments: str = Form(""),
 ):
-    require_admin(request)
+    user = require_admin(request)
     original_name = Path(file.filename or "document").name
     safe_name = re.sub(r"[^\w.（）()\-\u4e00-\u9fff]", "_", original_name)
     extension = Path(safe_name).suffix.lower()
@@ -230,6 +241,7 @@ async def upload_document(
             client.upload_file(str(target), config["bucket"], key)
         set_document_access(safe_name, access_scope, [value for value in departments.split(",") if value])
         engine.load(force=True)
+        log_event(user["username"], "document_upload", safe_name, details={"size": size, "storage": storage, "access_scope": access_scope})
         return {"ok": True, "file_name": safe_name, "size": size, "storage": storage}
     except HTTPException:
         if target.exists():
@@ -260,9 +272,10 @@ def access_data(request: Request):
 
 @app.post("/api/admin/departments")
 def create_department(data: DepartmentRequest, request: Request):
-    require_admin(request)
+    user = require_admin(request)
     try:
         add_department(data.name)
+        log_event(user["username"], "department_save", data.name)
         return {"ok": True}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -270,11 +283,12 @@ def create_department(data: DepartmentRequest, request: Request):
 
 @app.post("/api/admin/users")
 def create_or_update_user(data: UserRequest, request: Request):
-    require_admin(request)
+    user = require_admin(request)
     if data.role not in {"employee", "admin"}:
         raise HTTPException(status_code=400, detail="用户角色无效")
     try:
         save_user(data.model_dump())
+        log_event(user["username"], "user_save", data.username, details={"role": data.role, "departments": data.departments, "enabled": data.enabled})
         return {"ok": True}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -319,7 +333,7 @@ def library(request: Request):
 
 @app.post("/api/admin/documents/access")
 def update_document_access(data: DocumentAccessRequest, request: Request):
-    require_admin(request)
+    user = require_admin(request)
     if data.access_scope == "departments" and not data.departments:
         raise HTTPException(status_code=400, detail="请至少选择一个部门")
     known_names = {item["file_name"] for item in engine.documents} if engine.ready else set()
@@ -327,6 +341,7 @@ def update_document_access(data: DocumentAccessRequest, request: Request):
         raise HTTPException(status_code=404, detail="没有找到该资料")
     try:
         set_document_access(data.file_name, data.access_scope, data.departments)
+        log_event(user["username"], "document_access_change", data.file_name, details={"access_scope": data.access_scope, "departments": data.departments})
         return {"ok": True}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -334,7 +349,7 @@ def update_document_access(data: DocumentAccessRequest, request: Request):
 
 @app.post("/api/admin/documents/delete")
 def delete_document(data: DeleteDocumentRequest, request: Request):
-    require_admin(request)
+    user = require_admin(request)
     engine.load()
     sources = {}
     for item in engine.documents:
@@ -361,4 +376,49 @@ def delete_document(data: DeleteDocumentRequest, request: Request):
         engine.load(force=True)
     except RuntimeError:
         engine.clear()
+    log_event(user["username"], "document_delete", name)
     return {"ok": True, "file_name": name}
+
+
+@app.get("/api/admin/dashboard")
+def dashboard(request: Request):
+    require_admin(request)
+    return {"retrieval": engine.metrics_summary(), "evaluation": evaluation_summary(), "knowledge": engine.status(), "recent_audit": list_audit(8)}
+
+
+@app.get("/api/admin/audit")
+def audit(request: Request, limit: int = 100):
+    require_admin(request)
+    return {"items": list_audit(limit)}
+
+
+@app.get("/api/admin/evaluations")
+def evaluations(request: Request):
+    require_admin(request)
+    return {"items": list_evaluation_cases(), "summary": evaluation_summary()}
+
+
+@app.post("/api/admin/evaluations")
+def create_evaluation(data: EvaluationCaseRequest, request: Request):
+    user = require_admin(request)
+    case_id = add_evaluation_case(data.question, data.expected_file)
+    log_event(user["username"], "evaluation_case_add", data.expected_file)
+    return {"ok": True, "id": case_id}
+
+
+@app.post("/api/admin/evaluations/run")
+def run_evaluations(request: Request):
+    user = require_admin(request)
+    cases = [item for item in list_evaluation_cases() if item["enabled"]]
+    results = []
+    for case in cases:
+        started = time.time()
+        retrieval = engine.retrieve(case["question"], user)
+        files = list(dict.fromkeys(item["file_name"] for item in retrieval["results"]))
+        expected = case["expected_file"].lower()
+        passed = any(expected in name.lower() for name in files)
+        latency = int((time.time() - started) * 1000)
+        save_evaluation_run(case["id"], passed, files, retrieval["best_score"], latency)
+        results.append({"case_id": case["id"], "question": case["question"], "expected_file": case["expected_file"], "matched_files": files, "passed": passed, "best_score": retrieval["best_score"], "latency_ms": latency})
+    log_event(user["username"], "evaluation_run", details={"cases": len(results), "passed": sum(item["passed"] for item in results)})
+    return {"items": results, "summary": evaluation_summary()}
