@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/modal.css?v=20260825-3">
   <link rel="stylesheet" href="/static/access.css?v=20260825-3">
   <link rel="stylesheet" href="/static/responsive.css?v=20260825-4">
+  <link rel="stylesheet" href="/static/library.css?v=20260825-5">
 </head>
 <body>
   <section id="login" class="login-shell hidden">
@@ -27,6 +28,7 @@
       <div class="logo"><span>T</span><div><b>企业知识库</b><small>智能资料检索</small></div></div>
       <div class="status"><i></i><span id="status-text">服务已连接</span></div>
       <div class="aside-copy"><b>支持格式</b><p>PDF · Word · Excel<br>文本 · 图片 OCR<br>WPS/金山 · 腾讯文档</p></div>
+      <button id="open-library" class="primary-side">资料库</button>
       <button id="add-source" class="primary-side">＋ 添加资料</button>
       <button id="manage-access" class="ghost">员工与部门权限</button>
       <button id="sync" class="ghost">立即同步知识库</button>
@@ -78,6 +80,14 @@
       <div class="user-table"><h3>现有员工</h3><div id="user-list"></div></div>
     </div>
   </div>
-  <script src="/static/app.js?v=20260825-3"></script>
+  <div id="library-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card library-card">
+      <div class="modal-head"><div><h2>企业资料库</h2><p>这里只显示你有权限查阅的资料</p></div><button id="close-library" class="icon-button">×</button></div>
+      <div class="library-toolbar"><input id="library-search" placeholder="搜索资料名称、格式或版本"><span id="library-count"></span></div>
+      <div id="library-list" class="library-list"></div>
+      <div id="library-empty" class="library-empty hidden">没有找到可查阅的资料</div>
+    </div>
+  </div>
+  <script src="/static/app.js?v=20260825-5"></script>
 </body>
 </html>

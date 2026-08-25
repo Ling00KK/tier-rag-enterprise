@@ -15,7 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .rag_engine import RagEngine
 from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import list_integrations, save_integration, s3_config
-from .access_control import add_department, authenticate, list_access_data, save_user, set_document_access
+from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, save_user, set_document_access
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -87,6 +87,12 @@ class UserRequest(BaseModel):
     role: str = "employee"
     departments: list[str] = Field(default_factory=list)
     enabled: bool = True
+
+
+class DocumentAccessRequest(BaseModel):
+    file_name: str = Field(min_length=1, max_length=255)
+    access_scope: str
+    departments: list[str] = Field(default_factory=list)
 
 
 def require_login(request):
@@ -265,6 +271,56 @@ def create_or_update_user(data: UserRequest, request: Request):
         raise HTTPException(status_code=400, detail="用户角色无效")
     try:
         save_user(data.model_dump())
+        return {"ok": True}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def _library_items(user):
+    engine.load()
+    grouped = {}
+    for item in engine.documents:
+        name = item["file_name"]
+        if not can_access(name, user, item):
+            continue
+        record = grouped.setdefault(name, {
+            "file_name": name,
+            "file_type": Path(name).suffix.lower().lstrip(".") or "在线文档",
+            "version_label": item.get("version_label"),
+            "document_kind": item.get("document_kind", "full"),
+            "source_type": "online" if str(item.get("file_path", "")).startswith("online://") else "local",
+            "locations": 0,
+            "preview": "",
+        })
+        record["locations"] += 1
+        if len(record["preview"]) < 1200:
+            record["preview"] += ("\n" if record["preview"] else "") + item["text"][:600]
+        if user.get("role") == "admin":
+            acl = get_document_access(name, item)
+            record["access_scope"] = acl["scope"]
+            record["departments"] = acl.get("departments", [])
+    return sorted(grouped.values(), key=lambda value: value["file_name"].lower())
+
+
+@app.get("/api/library")
+def library(request: Request):
+    user = current_user(request)
+    try:
+        return {"items": _library_items(user), "is_admin": user.get("role") == "admin"}
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"资料库暂时不可用：{error}") from error
+
+
+@app.post("/api/admin/documents/access")
+def update_document_access(data: DocumentAccessRequest, request: Request):
+    require_admin(request)
+    if data.access_scope == "departments" and not data.departments:
+        raise HTTPException(status_code=400, detail="请至少选择一个部门")
+    known_names = {item["file_name"] for item in engine.documents} if engine.ready else set()
+    if known_names and data.file_name not in known_names:
+        raise HTTPException(status_code=404, detail="没有找到该资料")
+    try:
+        set_document_access(data.file_name, data.access_scope, data.departments)
         return {"ok": True}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

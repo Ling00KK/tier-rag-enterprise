@@ -97,15 +97,21 @@ def set_document_access(name, scope="public", departments=None):
         data["documents"][name] = {"scope": scope, "departments": departments or []}
         _write(data)
 
+def get_document_access(name, item=None):
+    stored = _read()["documents"].get(name)
+    if stored:
+        return stored
+    item = item or {}
+    return {
+        "scope": item.get("access_scope", "public"),
+        "departments": item.get("departments") or [],
+    }
+
 def can_access(name, user, item=None):
     if user.get("role") == "admin":
         return True
-    item = item or {}
-    scope = item.get("access_scope")
-    departments = item.get("departments") or []
-    if not scope:
-        acl = _read()["documents"].get(name, {"scope": "public", "departments": []})
-        scope, departments = acl["scope"], acl.get("departments", [])
+    acl = get_document_access(name, item)
+    scope, departments = acl["scope"], acl.get("departments", [])
     if scope == "public":
         return True
     if scope == "admin":

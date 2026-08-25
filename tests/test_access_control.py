@@ -16,6 +16,10 @@ def test_department_permissions(tmp_path, monkeypatch):
     assert access_control.can_access("财务.pdf", user)
     assert not access_control.can_access("人事.pdf", user)
     assert not access_control.can_access("管理.pdf", user)
+    online = {"access_scope": "departments", "departments": ["人事部"]}
+    assert not access_control.can_access("在线制度", user, online)
+    access_control.set_document_access("在线制度", "departments", ["财务部"])
+    assert access_control.can_access("在线制度", user, online)
 
 
 if __name__ == "__main__":
