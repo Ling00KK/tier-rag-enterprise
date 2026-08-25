@@ -179,6 +179,8 @@ def load_online_sources(config_path):
                     "text": text,
                     "source_url": source.get("url") or source.get("endpoint"),
                     "online_provider": provider,
+                    "access_scope": source.get("access_scope", "public"),
+                    "departments": source.get("departments", []),
                 })
         except Exception as error:
             failures.append(f"{name}：{error}")

@@ -9,6 +9,7 @@ from openai import OpenAI
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from .document_loader import filter_chunks_for_question, load_all_sources
+from .access_control import can_access
 
 
 def _is_bad_text(text):
@@ -93,9 +94,10 @@ class RagEngine:
             "sync_failures": self.sync_failures,
         }
 
-    def ask(self, question):
+    def ask(self, question, user):
         self.load()
-        search_chunks, version_note = filter_chunks_for_question(self.chunks, question)
+        permitted = [chunk for chunk in self.chunks if can_access(chunk["file_name"], user, chunk)]
+        search_chunks, version_note = filter_chunks_for_question(permitted, question)
         if not search_chunks:
             return {"answer": "未在资料中找到足够信息。", "sources": [], "version_note": version_note}
 
