@@ -2,14 +2,16 @@
 
 > **第一版（v1.0.0）** — 面向企业内网的多格式知识库问答网站。
 
-将公司的 PDF、Word、Excel、文本和图片资料放入统一目录，员工即可通过网页提问。系统先使用 BGE、FAISS 和 Reranker 检索最相关的原文，再调用 OpenAI-compatible vLLM 生成简洁中文答案，并返回文件名、页码或工作表等来源信息。
+将公司的 PDF、Word、Excel、文本和图片资料放入统一目录，员工即可通过网页提问。系统使用 BM25 关键词检索与 BGE/FAISS 语义检索进行混合召回，再经 Reranker 精排，最后调用 OpenAI-compatible vLLM 生成简洁中文答案，并返回文件名、页码或工作表等来源信息。
 
 ## 第一版能力
 
 - 独立网页与 FastAPI 后端，不依赖 Streamlit
 - 用户名、密码哈希验证及登录失败限流
 - 支持 PDF、DOCX、XLSX、XLS、TXT、Markdown 与常见图片 OCR
-- BGE Embedding + FAISS 召回 + `bge-reranker-base` Top 3 重排
+- BM25 + BGE/FAISS 混合召回、RRF 融合及 `bge-reranker-base` Top 3 重排
+- 段落边界切分、上下文重叠和 Excel 短行保留
+- SQLite 增量向量缓存与低相关度拒答
 - 接入 OpenAI-compatible API，可对接公司内部 vLLM
 - 回答附带来源；资料不足时明确说明未找到，避免编造
 - 同系列制度默认选择最新版本，问题指定年份时可查询历史版本
@@ -20,8 +22,8 @@
 ## 工作流程
 
 ```text
-企业资料 → 多格式读取与切分 → BGE + FAISS 召回
-         → bge-reranker-base 精排 Top 3
+企业资料 → 多格式读取与结构化切分 → BM25 + BGE/FAISS 混合召回
+         → RRF 融合 → bge-reranker-base 精排 Top 3
          → 公司 vLLM / Qwen → 中文答案 + 来源定位
 ```
 
