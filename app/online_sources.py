@@ -14,8 +14,17 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+from .integration_store import online_sources as managed_online_sources
+
 
 def _secret(source, key, required=True):
+    managed_name = key.removesuffix("_env")
+    managed_value = source.get("_secrets", {}).get(managed_name, "")
+    if managed_value:
+        return managed_value
+    direct_value = source.get(managed_name, "")
+    if direct_value:
+        return direct_value
     env_name = source.get(key)
     value = os.getenv(env_name, "") if env_name else ""
     if required and not value:
@@ -143,10 +152,10 @@ def _load_http(source):
 
 def load_online_sources(config_path):
     config_path = Path(config_path)
-    if not config_path.exists():
-        return [], []
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    sources = config.get("sources", [])
+    sources = managed_online_sources()
+    if config_path.exists():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        sources.extend(config.get("sources", []))
     items, failures = [], []
     loaders = {
         "wps": _load_wps,

@@ -6,4 +6,5 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./source:/data/source:ro
+      - ./source:/data/source
+      - ./config:/data/config

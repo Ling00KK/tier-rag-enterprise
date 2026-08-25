@@ -3,6 +3,7 @@ source/*
 !source/.gitkeep
 !source/online_sources.example.json
 cache/
+config/
 __pycache__/
 *.py[cod]
 .venv/

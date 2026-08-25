@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>企业知识库助手</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260825-1">
+  <link rel="stylesheet" href="/static/style.css?v=20260825-2">
+  <link rel="stylesheet" href="/static/modal.css?v=20260825-2">
 </head>
 <body>
   <section id="login" class="login-shell hidden">
@@ -24,6 +25,7 @@
       <div class="logo"><span>T</span><div><b>企业知识库</b><small>智能资料检索</small></div></div>
       <div class="status"><i></i><span id="status-text">服务已连接</span></div>
       <div class="aside-copy"><b>支持格式</b><p>PDF · Word · Excel<br>文本 · 图片 OCR<br>WPS/金山 · 腾讯文档</p></div>
+      <button id="add-source" class="primary-side">＋ 添加资料</button>
       <button id="sync" class="ghost">立即同步知识库</button>
       <button id="clear" class="ghost">清空对话</button>
       <button id="logout" class="ghost">退出登录</button>
@@ -39,6 +41,29 @@
       </form>
     </section>
   </main>
-  <script src="/static/app.js?v=20260825-1"></script>
+  <div id="source-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="source-title">
+    <div class="modal-card">
+      <div class="modal-head"><div><h2 id="source-title">添加资料来源</h2><p>选择上传文件或连接在线文档</p></div><button id="close-source" class="icon-button" aria-label="关闭">×</button></div>
+      <div class="provider-tabs">
+        <button class="provider active" data-provider="upload"><span>↑</span><b>文件上传</b><small>PDF · Word · Excel · 图片</small></button>
+        <button class="provider" data-provider="wps"><span>W</span><b>WPS / 金山</b><small>连接在线云文档</small></button>
+        <button class="provider" data-provider="tencent_docs"><span>腾</span><b>腾讯文档</b><small>企业开放平台</small></button>
+        <button class="provider" data-provider="s3"><span>☁</span><b>云端资料库</b><small>S3 · COS · OSS · MinIO</small></button>
+      </div>
+      <form id="source-form">
+        <input id="provider-value" type="hidden" value="upload">
+        <section class="provider-panel" data-panel="upload">
+          <label class="drop-zone" for="document-file"><strong>点击选择资料文件</strong><span>支持 PDF、Word、Excel、文本及图片，单个文件不超过 50MB</span><input id="document-file" type="file" accept=".pdf,.docx,.xlsx,.xls,.txt,.md,.png,.jpg,.jpeg,.bmp,.tif,.tiff"></label>
+          <label>保存位置<select id="upload-storage"><option value="local">服务器资料库</option><option value="cloud">已配置的云端资料库</option></select></label>
+        </section>
+        <section class="provider-panel hidden" data-panel="wps"><div class="form-grid"><label>显示名称<input name="name" placeholder="例如：员工守则_2026版"></label><label>Drive ID<input name="drive_id"></label><label>File ID<input name="file_id"></label><label>Access Token<input name="access_token" type="password" autocomplete="off"></label><label>APPID（可选）<input name="app_id"></label><label>APPKEY（可选）<input name="app_key" type="password" autocomplete="off"></label></div></section>
+        <section class="provider-panel hidden" data-panel="tencent_docs"><div class="form-grid"><label>显示名称<input name="name" placeholder="例如：业务制度_2026版"></label><label class="wide">内容接口地址<input name="endpoint" placeholder="腾讯文档审核后提供的 endpoint"></label><label>Client ID<input name="client_id"></label><label>Client Secret<input name="client_secret" type="password" autocomplete="off"></label><label>Open ID<input name="open_id"></label><label>Access Token<input name="access_token" type="password" autocomplete="off"></label><label>内容字段<input name="content_field" value="content"></label></div></section>
+        <section class="provider-panel hidden" data-panel="s3"><div class="form-grid"><label>显示名称<input name="name" placeholder="公司云端资料库"></label><label>Bucket<input name="bucket"></label><label>Region<input name="region" placeholder="例如 ap-shanghai"></label><label>Endpoint URL<input name="endpoint_url" placeholder="COS/OSS/MinIO 地址"></label><label>Access Key<input name="access_key" autocomplete="off"></label><label>Secret Key<input name="secret_key" type="password" autocomplete="off"></label><label>目录前缀<input name="prefix" value="knowledge-base"></label></div></section>
+        <div id="source-error" class="error"></div>
+        <div class="modal-actions"><button type="button" id="cancel-source" class="secondary">取消</button><button type="submit" class="save-button">保存并同步</button></div>
+      </form>
+    </div>
+  </div>
+  <script src="/static/app.js?v=20260825-2"></script>
 </body>
 </html>

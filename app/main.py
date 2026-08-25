@@ -2,16 +2,19 @@ import hashlib
 import hmac
 import os
 import time
+import re
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from .rag_engine import RagEngine
+from .document_loader import SUPPORTED_EXTENSIONS
+from .integration_store import list_integrations, save_integration, s3_config
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -46,6 +49,28 @@ class LoginRequest(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
+
+
+class IntegrationRequest(BaseModel):
+    provider: str
+    name: str = Field(min_length=1, max_length=100)
+    enabled: bool = True
+    drive_id: str | None = None
+    file_id: str | None = None
+    endpoint: str | None = None
+    content_field: str | None = None
+    access_token: str | None = None
+    app_id: str | None = None
+    app_key: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    open_id: str | None = None
+    bucket: str | None = None
+    region: str | None = None
+    endpoint_url: str | None = None
+    prefix: str | None = None
+    access_key: str | None = None
+    secret_key: str | None = None
 
 
 def require_login(request):
@@ -101,6 +126,71 @@ def sync_knowledge_base(request: Request):
         return {"ok": True, **engine.status()}
     except Exception as error:
         raise HTTPException(status_code=503, detail=f"知识库同步失败：{error}") from error
+
+
+@app.get("/api/integrations")
+def integrations(request: Request):
+    require_login(request)
+    return {"items": list_integrations()}
+
+
+@app.post("/api/integrations")
+def add_integration(data: IntegrationRequest, request: Request):
+    require_login(request)
+    try:
+        item_id = save_integration(data.model_dump(exclude_none=True))
+        return {"ok": True, "id": item_id}
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"保存连接失败：{error}") from error
+
+
+@app.post("/api/documents/upload")
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    storage: str = Form("local"),
+    cloud_config_id: str | None = Form(None),
+):
+    require_login(request)
+    original_name = Path(file.filename or "document").name
+    safe_name = re.sub(r"[^\w.（）()\-\u4e00-\u9fff]", "_", original_name)
+    extension = Path(safe_name).suffix.lower()
+    if extension not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="暂不支持该文件格式")
+    target = engine.source_dir / safe_name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    try:
+        with target.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > 50 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="单个文件不能超过 50MB")
+                output.write(chunk)
+        if storage == "cloud":
+            config = s3_config(cloud_config_id)
+            import boto3
+            client = boto3.client(
+                "s3",
+                region_name=config.get("region") or None,
+                endpoint_url=config.get("endpoint_url") or None,
+                aws_access_key_id=config["access_key"],
+                aws_secret_access_key=config["secret_key"],
+            )
+            key = (config.get("prefix", "knowledge-base").strip("/") + "/" + safe_name).lstrip("/")
+            client.upload_file(str(target), config["bucket"], key)
+        engine.load(force=True)
+        return {"ok": True, "file_name": safe_name, "size": size, "storage": storage}
+    except HTTPException:
+        if target.exists():
+            target.unlink()
+        raise
+    except Exception as error:
+        if target.exists() and size == 0:
+            target.unlink()
+        raise HTTPException(status_code=503, detail=f"上传失败：{error}") from error
+    finally:
+        await file.close()
 
 
 @app.post("/api/ask")

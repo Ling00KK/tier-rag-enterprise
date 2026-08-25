@@ -76,6 +76,7 @@ CPU 服务器建议安装 PyTorch CPU 版，以避免下载不需要的 CUDA 组
 | `VLLM_BASE_URL` | OpenAI-compatible API 地址 |
 | `VLLM_MODEL` | 大模型名称 |
 | `VLLM_API_KEY` | API 密钥；无鉴权服务可使用 `EMPTY` |
+| `INTEGRATIONS_CONFIG` | 加密后的在线连接配置保存位置 |
 
 ## 支持的文件
 
@@ -115,6 +116,17 @@ CPU 服务器建议安装 PyTorch CPU 版，以避免下载不需要的 CUDA 组
 腾讯文档企业 API 需要在开放合作平台申请应用并通过审核。审核后，将官方提供的内容或导出接口填写到 `endpoint`，并配置 access token、Client ID 和 Open ID。由于不同合作应用开放的地址及响应字段可能不同，可通过 `TENCENT_DOCS_API_BASE_URL` 和 `content_field` 适配。
 
 默认每 300 秒在下一次提问时检查同步一次，也可以点击网页侧栏的“立即同步知识库”。通过 `ONLINE_REFRESH_SECONDS` 可修改周期。
+
+### 网页知识库管理
+
+登录后点击侧栏“添加资料”，可直接选择：
+
+- 文件上传：保存到服务器资料库并立即建立索引。
+- WPS / 金山：填写 Drive ID、File ID 和开放平台凭证。
+- 腾讯文档：填写审核后获得的开放接口与 OAuth 凭证。
+- 云端资料库：配置 S3 兼容存储，可用于 AWS S3、腾讯 COS、阿里 OSS 或 MinIO。
+
+Client Secret、Token、Access Key 等字段使用服务器会话密钥加密后保存到 `INTEGRATIONS_CONFIG`，接口和资料列表不会返回密钥原文。云端上传成功后，服务器会保留检索缓存，因此文档可立即进入 RAG。
 
 ## 项目结构
 
