@@ -118,14 +118,18 @@ class RagEngine:
             item["rerank_score"] = float(score)
         candidates.sort(key=lambda item: item["rerank_score"], reverse=True)
         top_results = candidates[:3]
+        # 给模型按时间从旧到新展示；同一条款冲突时，后出现的修订覆盖前文。
+        top_results.sort(key=lambda item: item.get("effective_order", (0,)))
         context = "\n\n".join(
-            f"[来源：{item['file_name']}，{item['location']}]\n{item['text']}"
+            f"[来源：{item['file_name']}，{item['location']}，"
+            f"类型：{'增量修订' if item.get('document_kind') == 'amendment' else '完整版本'}]\n"
+            f"{item['text']}"
             for item in top_results
         )
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "你是企业内部文档答疑助手。只能依据检索资料回答，不得猜测或编造。资料不足时只回答：未在资料中找到足够信息。使用简洁中文回答，不要编造来源。"},
+                {"role": "system", "content": "你是企业内部文档答疑助手。只能依据检索资料回答，不得猜测或编造。资料按生效顺序从旧到新排列；同一事项冲突时，后面的增量修订覆盖前面的完整版本或旧修订，未被后续修订的内容继续有效。资料不足，或只有修订文件而缺少必要基础版本时，只回答：未在资料中找到足够信息。使用简洁中文回答，不要编造来源。"},
                 {"role": "user", "content": f"用户问题：\n{question}\n\n检索资料：\n{context}"},
             ],
             temperature=0.1,
@@ -133,7 +137,13 @@ class RagEngine:
         )
         answer = response.choices[0].message.content or "未在资料中找到足够信息。"
         sources = [
-            {"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500]}
+            {
+                "file_name": item["file_name"],
+                "location": item["location"],
+                "excerpt": item["text"][:500],
+                "version_label": item.get("version_label"),
+                "document_kind": item.get("document_kind", "full"),
+            }
             for item in top_results
         ]
         return {"answer": answer.strip(), "sources": sources, "version_note": version_note}

@@ -12,6 +12,12 @@ SUPPORTED_EXTENSIONS = {
 
 YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?:\s*年|\s*版|\s*版本)?(?!\d)")
 VERSION_PATTERN = re.compile(r"(?i)(?:^|[\s_\-（(])v(?:ersion)?\s*(\d+(?:\.\d+)*)")
+AMENDMENT_PATTERN = re.compile(
+    r"(修订通知|修订决定|修改通知|修改决定|补充规定|补充通知|补充协议|勘误|变更通知)"
+)
+VERSION_DECORATION_PATTERN = re.compile(
+    r"(?i)[\s_\-—]*(修订版|最新版|最终版|正式版|完整版|全文)$"
+)
 
 
 def get_version_info(path):
@@ -22,10 +28,12 @@ def get_version_info(path):
     version_match = VERSION_PATTERN.search(stem)
     year = int(year_match.group(1)) if year_match else None
     version = version_match.group(1) if version_match else None
+    document_kind = "amendment" if AMENDMENT_PATTERN.search(stem) else "full"
 
     family = YEAR_PATTERN.sub("", stem)
     family = VERSION_PATTERN.sub(" ", family)
-    family = re.sub(r"(?i)[\s_\-—]*(修订版|最新版|最终版|正式版)$", "", family)
+    family = AMENDMENT_PATTERN.sub("", family)
+    family = VERSION_DECORATION_PATTERN.sub("", family)
     family = re.sub(r"[\s_\-—（）()\[\]【】]+", "", family).lower()
     family = family or stem.lower()
 
@@ -46,6 +54,7 @@ def get_version_info(path):
         "version_label": version_label,
         "version_key": version_key,
         "has_explicit_version": year is not None or version is not None,
+        "document_kind": document_kind,
     }
 
 
@@ -56,37 +65,67 @@ def apply_version_metadata(items):
         if path not in file_info:
             file_info[path] = get_version_info(path)
 
-    latest_by_family = {}
-    for info in file_info.values():
-        if info["has_explicit_version"]:
-            family = info["document_family"]
-            latest_by_family[family] = max(
-                latest_by_family.get(family, info["version_key"]),
-                info["version_key"],
-            )
+    active_paths_by_family = _active_paths_by_family(file_info)
 
     for item in items:
         info = file_info[item["file_path"]]
         item.update(info)
-        item["is_latest_version"] = (
-            not info["has_explicit_version"]
-            or info["version_key"] == latest_by_family[info["document_family"]]
-        )
+        item["is_latest_version"] = item["file_path"] in active_paths_by_family[
+            info["document_family"]
+        ]
+        item["effective_order"] = info["version_key"]
     return items
 
 
+def _active_paths_by_family(file_info, cutoff_year=None):
+    """选择每个系列的最新完整版本，以及其后的所有增量修订。"""
+    grouped = {}
+    for path, info in file_info.items():
+        if cutoff_year is not None:
+            year = info.get("version_year")
+            if year is not None and year > cutoff_year:
+                continue
+        grouped.setdefault(info["document_family"], []).append((path, info))
+
+    selected = {}
+    for family, entries in grouped.items():
+        full = [entry for entry in entries if entry[1]["document_kind"] == "full"]
+        if full:
+            baseline_key = max(entry[1]["version_key"] for entry in full)
+            paths = {path for path, info in full if info["version_key"] == baseline_key}
+            paths.update(
+                path for path, info in entries
+                if info["document_kind"] == "amendment"
+                and info["version_key"] >= baseline_key
+            )
+        else:
+            # 资料库只有修订文件时全部保留，交给回答阶段明确提示依据不完整。
+            paths = {path for path, _ in entries}
+        selected[family] = paths
+    return selected
+
+
 def filter_chunks_for_question(chunks, question):
-    """明确问年份时选该年，否则仅使用每个文档系列的最新版本。"""
+    """明确问年份时重建当时有效链，否则使用当前有效链。"""
     year_match = YEAR_PATTERN.search(question)
     if year_match:
         requested_year = int(year_match.group(1))
-        matching = [item for item in chunks if item.get("version_year") == requested_year]
+        file_info = {}
+        for item in chunks:
+            file_info.setdefault(item["file_path"], {
+                key: item.get(key) for key in (
+                    "document_family", "version_year", "version_key", "document_kind"
+                )
+            })
+        active = _active_paths_by_family(file_info, cutoff_year=requested_year)
+        active_paths = set().union(*active.values()) if active else set()
+        matching = [item for item in chunks if item["file_path"] in active_paths]
         if matching:
-            return matching, f"已按问题使用 {requested_year} 版本资料"
+            return matching, f"已重建截至 {requested_year} 年有效的完整版本与后续修订"
         return [], f"知识库中没有识别到 {requested_year} 版本资料"
 
     latest = [item for item in chunks if item.get("is_latest_version", True)]
-    return latest, "默认使用各文档系列的最新版本"
+    return latest, "已使用最新完整版本，并叠加其后的有效修订"
 
 
 def _item(path, location, text):
