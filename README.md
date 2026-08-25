@@ -14,6 +14,7 @@
 - 回答附带来源；资料不足时明确说明未找到，避免编造
 - 同系列制度默认选择最新版本，问题指定年份时可查询历史版本
 - 资料发生变化后，在下一次提问时自动检查并更新索引
+- WPS/金山文档与腾讯文档在线来源连接器，可定时或手动同步
 - Docker、WSL 或普通 Linux 服务器均可部署
 
 ## 工作流程
@@ -101,6 +102,20 @@ CPU 服务器建议安装 PyTorch CPU 版，以避免下载不需要的 CUDA 组
 
 未指定年份时，系统优先检索同系列最新版本；问题中明确包含 `2024` 等年份时，则选择对应历史版本。版本判断来自文件名，因此公司应制定统一命名规范。
 
+## 在线文档接入
+
+复制 `online_sources.example.json` 为资料目录下的 `online_sources.json`，按需启用来源。密钥字段填写的是环境变量名称，真实凭证只能保存在 `.env`。
+
+### WPS / 金山文档
+
+金山文档与 WPS 统一使用 WPS 365 开放平台。需要在开放平台创建企业应用，申请文件读取权限，并取得 `drive_id`、`file_id` 和 access token。若应用开启了接口签名，还需配置 APPID 和 APPKEY，程序会自动生成 KSO-1 签名。
+
+### 腾讯文档
+
+腾讯文档企业 API 需要在开放合作平台申请应用并通过审核。审核后，将官方提供的内容或导出接口填写到 `endpoint`，并配置 access token、Client ID 和 Open ID。由于不同合作应用开放的地址及响应字段可能不同，可通过 `TENCENT_DOCS_API_BASE_URL` 和 `content_field` 适配。
+
+默认每 300 秒在下一次提问时检查同步一次，也可以点击网页侧栏的“立即同步知识库”。通过 `ONLINE_REFRESH_SECONDS` 可修改周期。
+
 ## 项目结构
 
 ```text
@@ -108,6 +123,7 @@ app/
   main.py              FastAPI、登录与问答接口
   rag_engine.py        检索、重排、版本选择与大模型调用
   document_loader.py   多格式文件读取
+  online_sources.py    WPS/金山、腾讯文档与通用 HTTPS 连接器
   static/              网页前端
 scripts/
   hash_password.py     登录密码哈希生成工具

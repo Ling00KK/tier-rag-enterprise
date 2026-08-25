@@ -93,6 +93,16 @@ def status(request: Request):
     return engine.status()
 
 
+@app.post("/api/sync")
+def sync_knowledge_base(request: Request):
+    require_login(request)
+    try:
+        engine.load(force=True)
+        return {"ok": True, **engine.status()}
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"知识库同步失败：{error}") from error
+
+
 @app.post("/api/ask")
 def ask(data: AskRequest, request: Request):
     require_login(request)

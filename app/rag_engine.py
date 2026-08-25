@@ -1,4 +1,6 @@
 import threading
+import os
+import time
 from pathlib import Path
 
 import faiss
@@ -6,7 +8,7 @@ import numpy as np
 from openai import OpenAI
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
-from .document_loader import filter_chunks_for_question, load_source_directory
+from .document_loader import filter_chunks_for_question, load_all_sources
 
 
 def _is_bad_text(text):
@@ -41,30 +43,43 @@ class RagEngine:
         self.api_key = api_key
         self._lock = threading.Lock()
         self.ready = False
+        self.last_sync_at = 0.0
+        self.refresh_seconds = max(30, int(os.getenv("ONLINE_REFRESH_SECONDS", "300")))
+        self.sync_failures = []
 
-    def load(self):
+    def load(self, force=False):
         with self._lock:
-            if self.ready:
+            now = time.time()
+            if self.ready and not force and now - self.last_sync_at < self.refresh_seconds:
                 return
-            self.documents = load_source_directory(self.source_dir)
-            self.chunks = _split_documents(self.documents)
-            if not self.chunks:
+            documents, failures = load_all_sources(self.source_dir)
+            chunks = _split_documents(documents)
+            if not chunks:
                 raise RuntimeError("资料中没有生成可检索的文本块")
-            for vector_id, chunk in enumerate(self.chunks):
+            for vector_id, chunk in enumerate(chunks):
                 chunk["_vector_id"] = vector_id
-            self.embedding = SentenceTransformer("BAAI/bge-small-zh-v1.5")
-            self.vectors = np.asarray(
+
+            if not hasattr(self, "embedding"):
+                self.embedding = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+                self.reranker = CrossEncoder("BAAI/bge-reranker-base")
+                self.client = OpenAI(
+                    base_url=self.base_url, api_key=self.api_key, timeout=120.0
+                )
+            vectors = np.asarray(
                 self.embedding.encode(
-                    [chunk["text"] for chunk in self.chunks],
+                    [chunk["text"] for chunk in chunks],
                     normalize_embeddings=True,
                     show_progress_bar=False,
                 ),
                 dtype="float32",
             )
-            self.reranker = CrossEncoder("BAAI/bge-reranker-base")
-            self.client = OpenAI(
-                base_url=self.base_url, api_key=self.api_key, timeout=120.0
-            )
+
+            # 所有新数据准备完毕后再原子替换，刷新失败不会破坏上一版索引。
+            self.documents = documents
+            self.chunks = chunks
+            self.vectors = vectors
+            self.sync_failures = failures
+            self.last_sync_at = now
             self.ready = True
 
     def status(self):
@@ -73,6 +88,9 @@ class RagEngine:
             "files": len({item["file_path"] for item in self.documents}) if self.ready else 0,
             "chunks": len(self.chunks) if self.ready else 0,
             "model": self.model,
+            "last_sync_at": self.last_sync_at or None,
+            "refresh_seconds": self.refresh_seconds,
+            "sync_failures": self.sync_failures,
         }
 
     def ask(self, question):

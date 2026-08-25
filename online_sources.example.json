@@ -1,0 +1,25 @@
+{
+  "sources": [
+    {
+      "provider": "wps",
+      "name": "员工守则_2026版（WPS）",
+      "drive_id": "请填写云盘ID",
+      "file_id": "请填写文件ID",
+      "format": "markdown",
+      "access_token_env": "WPS_ACCESS_TOKEN",
+      "app_id_env": "WPS_APP_ID",
+      "app_key_env": "WPS_APP_KEY",
+      "enabled": false
+    },
+    {
+      "provider": "tencent_docs",
+      "name": "业务制度_2026版（腾讯文档）",
+      "endpoint": "/请填写开放平台提供的内容或导出接口路径",
+      "content_field": "content",
+      "access_token_env": "TENCENT_DOCS_ACCESS_TOKEN",
+      "client_id_env": "TENCENT_DOCS_CLIENT_ID",
+      "open_id_env": "TENCENT_DOCS_OPEN_ID",
+      "enabled": false
+    }
+  ]
+}

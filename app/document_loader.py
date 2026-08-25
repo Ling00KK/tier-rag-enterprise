@@ -1,5 +1,8 @@
 from pathlib import Path
+import os
 import re
+
+from .online_sources import load_online_sources
 
 
 SUPPORTED_EXTENSIONS = {
@@ -244,3 +247,28 @@ def load_source_directory(source_directory):
         raise RuntimeError(f"没有成功读取任何资料。\n{details}")
 
     return apply_version_metadata(items)
+
+
+def load_all_sources(source_directory):
+    """统一加载本地文件与已配置的在线文档。"""
+    source_directory = Path(source_directory)
+    items = []
+    failures = []
+    try:
+        items.extend(load_source_directory(source_directory))
+    except RuntimeError as error:
+        failures.append(str(error))
+
+    config_path = Path(os.getenv(
+        "ONLINE_SOURCES_CONFIG",
+        str(source_directory / "online_sources.json"),
+    ))
+    online_items, online_failures = load_online_sources(config_path)
+    items.extend(online_items)
+    failures.extend(online_failures)
+    for failure in online_failures:
+        print(f"跳过在线文档：{failure}")
+
+    if not items:
+        raise RuntimeError("没有成功读取任何资料。\n" + "\n".join(failures))
+    return apply_version_metadata(items), failures
