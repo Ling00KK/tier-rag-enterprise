@@ -15,7 +15,10 @@ from openai import OpenAI
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from .access_control import can_access
+from .access_control import get_document_access
+from .clickhouse_store import ClickHouseStore
 from .document_loader import filter_chunks_for_question, load_all_sources
+from .model_store import load_model_config
 
 
 def _is_bad_text(text):
@@ -88,6 +91,19 @@ class RagEngine:
         self.refresh_seconds = max(30, int(os.getenv("ONLINE_REFRESH_SECONDS", "300")))
         self.rerank_min_score = float(os.getenv("RERANK_MIN_SCORE", "0.05"))
         self.sync_failures, self.cache_hits, self.cache_misses = [], 0, 0
+        self.clickhouse = ClickHouseStore()
+        self.clickhouse_required = os.getenv("CLICKHOUSE_REQUIRED", "false").lower() == "true"
+        if self.clickhouse_required and not self.clickhouse.enabled:
+            raise RuntimeError("CLICKHOUSE_REQUIRED=true 时必须同时设置 CLICKHOUSE_ENABLED=true")
+        self._model_signature = None
+
+    def _configure_generation_client(self):
+        config = load_model_config(include_secret=True)
+        signature = (config["base_url"], config["model"], config.get("api_key"), config.get("timeout", 120))
+        if signature != self._model_signature:
+            self.base_url, self.model, self.api_key = signature[:3]
+            self.client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=float(signature[3]))
+            self._model_signature = signature
 
     def _cache_path(self):
         configured = os.getenv("VECTOR_CACHE_PATH")
@@ -140,16 +156,27 @@ class RagEngine:
                 raise RuntimeError("资料中没有生成可检索的文本块")
             for vector_id, chunk in enumerate(chunks):
                 chunk["_vector_id"] = vector_id
+                path = str(chunk["file_path"])
+                chunk["_document_id"] = hashlib.sha256(path.encode()).hexdigest()[:32]
+                chunk["_chunk_id"] = hashlib.sha256((path + "\0" + chunk.get("location", "") + "\0" + chunk["text"]).encode()).hexdigest()
             if not hasattr(self, "embedding"):
                 self.embedding = SentenceTransformer("BAAI/bge-small-zh-v1.5")
                 self.reranker = CrossEncoder("BAAI/bge-reranker-base")
-                self.client = OpenAI(base_url=self.base_url, api_key=self.api_key, timeout=120.0)
+                self._configure_generation_client()
             vectors = self._encode_documents(chunks)
+            if self.clickhouse.enabled:
+                try:
+                    self.clickhouse.publish(chunks, vectors, get_document_access)
+                except Exception as error:
+                    failures.append({"source": "clickhouse", "error": str(error)})
+                    if self.clickhouse_required:
+                        raise RuntimeError(f"ClickHouse 同步失败：{error}") from error
             self.documents, self.chunks, self.vectors = documents, chunks, vectors
             self.sync_failures, self.last_sync_at, self.ready = failures, now, True
 
     def status(self):
-        return {"ready": self.ready, "files": len({item["file_path"] for item in self.documents}) if self.ready else 0, "chunks": len(self.chunks) if self.ready else 0, "model": self.model, "last_sync_at": self.last_sync_at or None, "refresh_seconds": self.refresh_seconds, "sync_failures": self.sync_failures, "retrieval": "hybrid_bm25_vector_rerank", "vector_cache_hits": self.cache_hits, "vector_cache_misses": self.cache_misses}
+        model_config = load_model_config()
+        return {"ready": self.ready, "files": len({item["file_path"] for item in self.documents}) if self.ready else 0, "chunks": len(self.chunks) if self.ready else 0, "model": model_config["model"], "model_provider": model_config["provider"], "last_sync_at": self.last_sync_at or None, "refresh_seconds": self.refresh_seconds, "sync_failures": self.sync_failures, "retrieval": "clickhouse_hybrid_rerank" if self.clickhouse.enabled else "faiss_bm25_rerank", "vector_store": self.clickhouse.health(), "vector_cache_hits": self.cache_hits, "vector_cache_misses": self.cache_misses}
 
     def metrics_summary(self, days=30):
         since = time.time() - days * 86400
@@ -182,18 +209,30 @@ class RagEngine:
         search_chunks, version_note = filter_chunks_for_question(permitted, question)
         if not search_chunks:
             return {"results": [], "version_note": version_note, "permitted_chunks": 0, "best_score": 0.0}
-        subset = self.vectors[[chunk["_vector_id"] for chunk in search_chunks]]
-        index = faiss.IndexFlatIP(subset.shape[1])
-        index.add(subset)
         query_vector = np.asarray(self.embedding.encode(["为这个句子生成表示以用于检索相关文章：" + question], normalize_embeddings=True), dtype="float32")
         recall_size = min(30, len(search_chunks))
-        vector_scores, vector_ids = index.search(query_vector, k=recall_size)
+        vector_pairs = []
+        if self.clickhouse.enabled:
+            try:
+                allowed_ids = {chunk["_chunk_id"] for chunk in search_chunks}
+                vector_pairs = [(item["chunk_id"], item["score"]) for item in self.clickhouse.search(query_vector[0], user, recall_size * 3) if item["chunk_id"] in allowed_ids][:recall_size]
+            except Exception:
+                if self.clickhouse_required:
+                    raise
+        if not vector_pairs:
+            subset = self.vectors[[chunk["_vector_id"] for chunk in search_chunks]]
+            index = faiss.IndexFlatIP(subset.shape[1]); index.add(subset)
+            vector_scores, vector_ids = index.search(query_vector, k=recall_size)
+            vector_pairs = [(search_chunks[int(chunk_id)]["_chunk_id"], float(vector_scores[0][rank])) for rank, chunk_id in enumerate(vector_ids[0])]
+        id_to_position = {chunk["_chunk_id"]: index for index, chunk in enumerate(search_chunks)}
         lexical_scores = _bm25(question, search_chunks)
         lexical_ids = np.argsort(-lexical_scores)[:recall_size]
         fused, vector_lookup = {}, {}
-        for rank, chunk_id in enumerate(vector_ids[0]):
-            fused[int(chunk_id)] = fused.get(int(chunk_id), 0) + 1 / (61 + rank)
-            vector_lookup[int(chunk_id)] = float(vector_scores[0][rank])
+        for rank, (stable_id, score) in enumerate(vector_pairs):
+            chunk_id = id_to_position.get(stable_id)
+            if chunk_id is None: continue
+            fused[chunk_id] = fused.get(chunk_id, 0) + 1 / (61 + rank)
+            vector_lookup[chunk_id] = score
         for rank, chunk_id in enumerate(lexical_ids):
             if lexical_scores[int(chunk_id)] <= 0:
                 continue
@@ -218,6 +257,7 @@ class RagEngine:
             return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": "未在资料中找到足够信息。", "sources": [], "version_note": retrieval["version_note"]}
         top_results.sort(key=lambda item: item.get("effective_order", (0,)))
         context = "\n\n".join(f"[来源：{item['file_name']}，{item['location']}，类型：{'增量修订' if item.get('document_kind') == 'amendment' else '完整版本'}]\n{item['text']}" for item in top_results)
+        self._configure_generation_client()
         response = self.client.chat.completions.create(model=self.model, messages=[{"role": "system", "content": "你是企业内部文档答疑助手。只能依据检索资料回答，不得猜测或编造。资料按生效顺序从旧到新排列；同一事项冲突时，后面的增量修订覆盖前面的完整版本或旧修订，未被后续修订的内容继续有效。资料不足时只回答：未在资料中找到足够信息。使用简洁中文回答，不要编造来源。"}, {"role": "user", "content": f"用户问题：\n{question}\n\n检索资料：\n{context}"}], temperature=0.1, max_tokens=500)
         answer = (response.choices[0].message.content or "未在资料中找到足够信息。").strip()
         sources = [{"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500], "version_label": item.get("version_label"), "document_kind": item.get("document_kind", "full")} for item in top_results]

@@ -6,5 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 tesser
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY scripts ./scripts
 EXPOSE 8501
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8501", "--proxy-headers"]

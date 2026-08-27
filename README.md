@@ -1,8 +1,8 @@
 # Tier 企业 RAG 知识库助手
 
-> **第一版（v1.0.0）** — 面向企业内网的多格式知识库问答网站。
+> **企业版（v2.0.0）** — 支持 ClickHouse 向量检索、部门权限和可切换模型服务的企业知识库网站。
 
-将公司的 PDF、Word、Excel、文本和图片资料放入统一目录，员工即可通过网页提问。系统使用 BM25 关键词检索与 BGE/FAISS 语义检索进行混合召回，再经 Reranker 精排，最后调用 OpenAI-compatible vLLM 生成简洁中文答案，并返回文件名、页码或工作表等来源信息。
+将公司的 PDF、Word、Excel、文本和图片资料放入统一目录，员工即可通过网页提问。正式服务器可使用 ClickHouse HNSW 向量召回，并与 BM25、RRF、Reranker 组成混合检索；本地开发环境仍可降级使用 FAISS。回答模型支持公司 vLLM、OpenRouter 和其他 OpenAI-compatible 服务。
 
 ## 第一版能力
 
@@ -26,7 +26,7 @@
 ## 工作流程
 
 ```text
-企业资料 → 多格式读取与结构化切分 → BM25 + BGE/FAISS 混合召回
+企业资料 → 多格式读取与结构化切分 → ClickHouse HNSW + BM25 混合召回
          → RRF 融合 → bge-reranker-base 精排 Top 3
          → 公司 vLLM / Qwen → 中文答案 + 来源定位
 ```
@@ -54,6 +54,38 @@ docker compose up -d --build
 ```
 
 浏览器访问 `http://服务器IP:8501`。
+
+## ClickHouse 正式部署
+
+使用项目自带的 ClickHouse 组合配置启动：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.clickhouse.yml up -d --build
+```
+
+在 `.env` 中设置：
+
+```text
+CLICKHOUSE_ENABLED=true
+CLICKHOUSE_REQUIRED=true
+CLICKHOUSE_HOST=clickhouse
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DATABASE=tier_rag
+CLICKHOUSE_USER=tier_rag_app
+CLICKHOUSE_PASSWORD=使用强随机密码
+EMBEDDING_DIMENSION=512
+```
+
+首次迁移已有资料：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.clickhouse.yml exec web \
+  python scripts/migrate_to_clickhouse.py
+```
+
+同步采用不可变快照：新向量全部写入成功后才切换检索快照，失败时保留旧索引。ClickHouse 中的向量查询包含部门权限条件；应用层还会执行第二次权限校验。旧快照默认保留 30 天后由 TTL 清理。
+
+`CLICKHOUSE_REQUIRED=true` 用于正式环境：ClickHouse 不可用时请求明确失败，不会静默切回本地索引。开发环境可设为 `false`，保留 FAISS 降级能力。
 
 ## WSL / Linux 直接运行
 
@@ -103,6 +135,12 @@ python scripts/test_permission_demo_live.py \
 | `VLLM_MODEL` | 大模型名称 |
 | `VLLM_API_KEY` | API 密钥；无鉴权服务可使用 `EMPTY` |
 | `INTEGRATIONS_CONFIG` | 加密后的在线连接配置保存位置 |
+| `MODEL_CONFIG_PATH` | 管理员模型配置的加密保存位置 |
+| `MODEL_ALLOWED_HOSTS` | 允许管理员连接的模型主机白名单 |
+| `CLICKHOUSE_ENABLED` | 是否启用 ClickHouse 向量库 |
+| `CLICKHOUSE_REQUIRED` | ClickHouse 故障时是否禁止降级 |
+| `CLICKHOUSE_HOST/PORT` | ClickHouse 服务地址和 HTTP 端口 |
+| `CLICKHOUSE_DATABASE` | ClickHouse 数据库名 |
 
 ## 支持的文件
 
@@ -164,11 +202,14 @@ Client Secret、Token、Access Key 等字段使用服务器会话密钥加密后
 app/
   main.py              FastAPI、登录与问答接口
   rag_engine.py        检索、重排、版本选择与大模型调用
+  clickhouse_store.py  ClickHouse表、快照、权限过滤与HNSW检索
+  model_store.py       回答模型加密配置、校验和连接测试
   document_loader.py   多格式文件读取
   online_sources.py    WPS/金山、腾讯文档与通用 HTTPS 连接器
   static/              网页前端
 scripts/
   hash_password.py     登录密码哈希生成工具
+  migrate_to_clickhouse.py  已有资料迁移和验证
 source/                企业资料目录（内容不提交）
 Dockerfile
 docker-compose.yml
@@ -187,10 +228,13 @@ requirements.txt
 - 管理数据中心提供运行指标、操作审计和标准问题召回评测；评测不会调用生成模型。
 - 上传或连接资料时可设为全公司可见、指定部门可见或仅管理员可见；既有资料升级后默认全公司可见。
 - 员工与权限配置保存在 `ACCESS_CONTROL_CONFIG`，密码仅保存 PBKDF2 哈希，不保存明文。
+- 管理员可以测试并切换回答模型；API Key 使用 Fernet 加密保存且接口不回显。
+- `MODEL_ALLOWED_HOSTS` 应由 IT 固定，防止管理员配置未经批准的外部模型地址。
+- `/api/health` 提供不含敏感错误的健康状态；详细状态仅管理员可见。
 
 ## 版本
 
-当前版本：**v1.2.0（本地增强版）**。详细内容见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v2.0.0（ClickHouse 企业版）**。详细内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 

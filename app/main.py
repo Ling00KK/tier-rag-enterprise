@@ -20,6 +20,7 @@ from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
 from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
 from .admin_store import add_evaluation_case, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
+from .model_store import load_model_config, save_model_config, test_model_config
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -116,6 +117,14 @@ class FeedbackRequest(BaseModel):
     comment: str = Field(default="", max_length=500)
 
 
+class ModelConfigRequest(BaseModel):
+    provider: str = Field(default="openai_compatible", max_length=50)
+    base_url: str = Field(min_length=8, max_length=500)
+    model: str = Field(min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, max_length=500)
+    timeout: int = Field(default=120, ge=5, le=300)
+
+
 def require_login(request):
     if not request.session.get("authenticated"):
         raise HTTPException(status_code=401, detail="请先登录")
@@ -182,6 +191,19 @@ def logout(request: Request):
 @app.get("/api/status")
 def status(request: Request):
     require_login(request)
+    return engine.status()
+
+
+@app.get("/api/health")
+def health():
+    state = engine.status()
+    vector = state["vector_store"]
+    return {"status": "healthy" if vector.get("healthy") else "degraded", "ready": state["ready"], "vector_store": vector.get("mode"), "model_provider": state["model_provider"]}
+
+
+@app.get("/api/admin/health")
+def admin_health(request: Request):
+    require_admin(request)
     return engine.status()
 
 
@@ -289,6 +311,36 @@ def access_data(request: Request):
     return list_access_data()
 
 
+@app.get("/api/admin/model")
+def model_config(request: Request):
+    require_admin(request)
+    return load_model_config()
+
+
+@app.post("/api/admin/model/test")
+def test_model(data: ModelConfigRequest, request: Request):
+    user = require_admin(request)
+    try:
+        result = test_model_config(data.model_dump(exclude_none=True))
+        log_event(user["username"], "model_test", data.model)
+        return result
+    except Exception as error:
+        log_event(user["username"], "model_test", data.model, result="failed", details={"error": str(error)})
+        raise HTTPException(status_code=400, detail=f"模型连接测试失败：{error}") from error
+
+
+@app.post("/api/admin/model")
+def update_model(data: ModelConfigRequest, request: Request):
+    user = require_admin(request)
+    try:
+        result = save_model_config(data.model_dump(exclude_none=True))
+        engine._model_signature = None
+        log_event(user["username"], "model_change", data.model, details={"provider": data.provider, "base_url": data.base_url})
+        return {"ok": True, **result}
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"模型配置保存失败：{error}") from error
+
+
 @app.post("/api/admin/departments")
 def create_department(data: DepartmentRequest, request: Request):
     user = require_admin(request)
@@ -360,6 +412,8 @@ def update_document_access(data: DocumentAccessRequest, request: Request):
         raise HTTPException(status_code=404, detail="没有找到该资料")
     try:
         set_document_access(data.file_name, data.access_scope, data.departments)
+        if engine.ready and engine.clickhouse.enabled:
+            engine.load(force=True)
         log_event(user["username"], "document_access_change", data.file_name, details={"access_scope": data.access_scope, "departments": data.departments})
         return {"ok": True}
     except ValueError as error:

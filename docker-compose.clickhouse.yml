@@ -1,0 +1,32 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: tier_rag
+      CLICKHOUSE_USER: tier_rag_app
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user tier_rag_app --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [rag_internal]
+
+  web:
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks: [rag_internal]
+
+networks:
+  rag_internal:
+    driver: bridge
+
+volumes:
+  clickhouse_data:
+  clickhouse_logs:
