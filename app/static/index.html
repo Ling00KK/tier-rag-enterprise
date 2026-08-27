@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="/static/delete.css?v=20260825-6">
   <link rel="stylesheet" href="/static/admin.css?v=20260825-7">
   <link rel="stylesheet" href="/static/admin-extra.css?v=20260825-1">
-  <link rel="stylesheet" href="/static/model.css?v=20260827-1">
+  <link rel="stylesheet" href="/static/model.css?v=20260827-2">
 </head>
 <body>
   <section id="login" class="login-shell hidden">
@@ -98,11 +98,11 @@
       <div class="modal-head"><div><h2>管理数据中心</h2><p>查看运行质量、操作记录和检索评测</p></div><button id="close-admin" class="icon-button">×</button></div>
       <div class="admin-tabs"><button class="active" data-admin-tab="overview">运行看板</button><button data-admin-tab="model">模型服务</button><button data-admin-tab="audit">操作审计</button><button data-admin-tab="evaluation">RAG 评测</button></div>
       <section class="admin-panel" data-admin-panel="overview"><div id="metric-cards" class="metric-cards"></div><div class="insight-grid"><div><h3>近 14 天提问趋势</h3><div id="trend-chart" class="trend-chart"></div></div><div><h3>答案反馈</h3><div id="feedback-summary"></div></div></div><h3>未找到答案的检索</h3><div id="failed-questions" class="audit-list"></div><h3>最近操作</h3><div id="recent-audit" class="audit-list"></div></section>
-      <section class="admin-panel hidden" data-admin-panel="model"><div class="model-heading"><div><h3>回答模型设置</h3><p>仅管理员可见。API Key 加密保存，保存后不会回显。</p></div><span id="model-state" class="scope-badge">读取中</span></div><form id="model-form" class="model-form"><label>服务类型<select name="provider"><option value="company_vllm">公司本地 vLLM</option><option value="openrouter">OpenRouter</option><option value="openai_compatible">其他 OpenAI-compatible</option></select></label><label>API 地址<input name="base_url" placeholder="https://openrouter.ai/api/v1" required></label><label>模型名称<input name="model" placeholder="openrouter/free" required></label><label>API Key<input name="api_key" type="password" placeholder="已配置时留空表示不修改"></label><label>超时时间（秒）<input name="timeout" type="number" min="5" max="300" value="120"></label><div class="model-actions"><button type="button" id="test-model">测试连接</button><button class="save-button">保存并切换</button></div></form><div id="model-message" class="model-message"></div><div class="security-note">使用外部模型时，问题和召回的文档片段会发送给外部服务。真实公司资料接入前请完成安全审批。</div></section>
+      <section class="admin-panel hidden" data-admin-panel="model"><div class="model-heading"><div><h3>回答模型管理</h3><p>可保存多个模型并随时切换。API Key 加密保存，保存后不会回显。</p></div><button type="button" id="new-model" class="secondary-button">＋ 添加模型</button></div><div id="model-list" class="model-list"></div><form id="model-form" class="model-form hidden"><input name="id" type="hidden"><label>配置名称<input name="name" placeholder="例如：OpenRouter 免费模型" required></label><label>服务类型<select name="provider"><option value="company_vllm">公司本地 vLLM</option><option value="openrouter">OpenRouter</option><option value="openai_compatible">其他 OpenAI-compatible</option></select></label><label>API 地址<input name="base_url" placeholder="https://openrouter.ai/api/v1" required></label><label>模型名称<input name="model" placeholder="z-ai/glm-5.2:free" required></label><label>API Key<input name="api_key" type="password" placeholder="已配置时留空表示不修改"></label><label>超时时间（秒）<input name="timeout" type="number" min="5" max="300" value="120"></label><div class="model-actions"><button type="button" id="cancel-model">取消</button><button type="button" id="test-model">测试连接</button><button class="save-button">保存配置</button></div></form><div id="model-message" class="model-message"></div><div class="security-note">使用外部模型时，问题和召回的文档片段会发送给外部服务。真实公司资料接入前请完成安全审批。</div></section>
       <section class="admin-panel hidden" data-admin-panel="audit"><div class="panel-heading"><h3>操作审计日志</h3><div><a class="export-button" href="/api/admin/audit/export">导出 CSV</a><button id="refresh-audit">刷新</button></div></div><div id="audit-list" class="audit-list"></div></section>
       <section class="admin-panel hidden" data-admin-panel="evaluation"><div class="evaluation-tools"><form id="evaluation-form"><input name="question" placeholder="标准测试问题" required><input name="expected_file" placeholder="期望命中的文件名" required><button>添加测试题</button></form><button id="run-evaluations">运行全部评测</button></div><div id="evaluation-summary"></div><div id="evaluation-list" class="evaluation-list"></div><div id="evaluation-results"></div></section>
     </div>
   </div>
-  <script src="/static/app.js?v=20260827-1"></script>
+  <script src="/static/app.js?v=20260827-2"></script>
 </body>
 </html>

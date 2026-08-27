@@ -20,7 +20,7 @@ from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
 from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
 from .admin_store import add_evaluation_case, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
-from .model_store import load_model_config, save_model_config, test_model_config
+from .model_store import activate_model_config, delete_model_config, list_model_configs, load_model_config, save_model_config, test_model_config
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -118,6 +118,8 @@ class FeedbackRequest(BaseModel):
 
 
 class ModelConfigRequest(BaseModel):
+    id: str | None = Field(default=None, max_length=64)
+    name: str | None = Field(default=None, max_length=100)
     provider: str = Field(default="openai_compatible", max_length=50)
     base_url: str = Field(min_length=8, max_length=500)
     model: str = Field(min_length=1, max_length=200)
@@ -317,6 +319,12 @@ def model_config(request: Request):
     return load_model_config()
 
 
+@app.get("/api/admin/models")
+def model_configs(request: Request):
+    require_admin(request)
+    return {"items": list_model_configs()}
+
+
 @app.post("/api/admin/model/test")
 def test_model(data: ModelConfigRequest, request: Request):
     user = require_admin(request)
@@ -339,6 +347,40 @@ def update_model(data: ModelConfigRequest, request: Request):
         return {"ok": True, **result}
     except Exception as error:
         raise HTTPException(status_code=400, detail=f"模型配置保存失败：{error}") from error
+
+
+@app.post("/api/admin/models")
+def create_or_update_model(data: ModelConfigRequest, request: Request):
+    user = require_admin(request)
+    try:
+        result = save_model_config(data.model_dump(exclude_none=True), activate=False)
+        log_event(user["username"], "model_save", data.model, details={"provider": data.provider, "base_url": data.base_url})
+        return {"ok": True, **result}
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"模型配置保存失败：{error}") from error
+
+
+@app.post("/api/admin/models/{model_id}/activate")
+def activate_model(model_id: str, request: Request):
+    user = require_admin(request)
+    try:
+        result = activate_model_config(model_id)
+        engine._model_signature = None
+        log_event(user["username"], "model_change", result["model"], details={"provider": result["provider"], "base_url": result["base_url"]})
+        return {"ok": True, **result}
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.delete("/api/admin/models/{model_id}")
+def delete_model(model_id: str, request: Request):
+    user = require_admin(request)
+    try:
+        delete_model_config(model_id)
+        log_event(user["username"], "model_delete", model_id)
+        return {"ok": True}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/api/admin/departments")
