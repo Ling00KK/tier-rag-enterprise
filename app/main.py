@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import os
 import time
 import re
@@ -21,6 +22,7 @@ from .integration_store import delete_online_source, list_integrations, save_int
 from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
 from .admin_store import add_evaluation_case, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
 from .model_store import activate_model_config, delete_model_config, list_model_configs, load_model_config, save_model_config, test_model_config
+from .runtime_log import read_runtime_logs, runtime_logger
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -46,6 +48,39 @@ engine = RagEngine(
     api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
 )
 attempts = defaultdict(list)
+
+
+@app.middleware("http")
+async def runtime_request_log(request: Request, call_next):
+    started = time.perf_counter()
+    path = request.url.path
+    try:
+        response = await call_next(request)
+    except Exception:
+        runtime_logger.exception(
+            "请求处理异常",
+            extra={
+                "method": request.method,
+                "path": path,
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "client": request.client.host if request.client else "unknown",
+            },
+        )
+        raise
+    if not path.startswith("/static/") and path != "/api/admin/system-logs":
+        level = logging.WARNING if response.status_code >= 400 else logging.INFO
+        runtime_logger.log(
+            level,
+            "请求完成",
+            extra={
+                "method": request.method,
+                "path": path,
+                "status": response.status_code,
+                "latency_ms": round((time.perf_counter() - started) * 1000),
+                "client": request.client.host if request.client else "unknown",
+            },
+        )
+    return response
 
 
 class LoginRequest(BaseModel):
@@ -510,6 +545,12 @@ def dashboard(request: Request):
 def audit(request: Request, limit: int = 100):
     require_admin(request)
     return {"items": list_audit(limit)}
+
+
+@app.get("/api/admin/system-logs")
+def system_logs(request: Request, limit: int = 200, level: str = "ALL"):
+    require_admin(request)
+    return {"items": read_runtime_logs(limit=limit, level=level)}
 
 
 @app.get("/api/admin/audit/export")

@@ -218,6 +218,8 @@ requirements.txt
 
 ## 安全与生产部署
 
+- 管理中心的“系统日志”仅对管理员开放，记录请求路径、状态码、耗时和异常，不记录请求正文、密码、API Key 或文档内容；日志默认自动轮转。
+
 - 不要提交 `.env`、真实密码、API Key、企业文档或索引缓存。
 - 公网或正式内网域名应使用 Nginx/Caddy 反向代理并启用 HTTPS。
 - 启用 HTTPS 后将 `COOKIE_HTTPS_ONLY=true`。
