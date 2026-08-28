@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import csv
 import io
 import difflib
@@ -23,6 +23,7 @@ from .access_control import add_department, authenticate, can_access, get_active
 from .admin_store import add_evaluation_case, audit_status, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
 from .model_store import activate_model_config, delete_model_config, list_model_configs, load_model_config, save_model_config, test_model_config
 from .runtime_log import read_runtime_logs, runtime_logger
+from .security import csv_safe
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -48,6 +49,30 @@ engine = RagEngine(
     api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
 )
 attempts = defaultdict(list)
+
+
+@app.middleware("http")
+async def browser_security(request: Request, call_next):
+    unsafe = request.method not in {"GET", "HEAD", "OPTIONS"}
+    fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    origin = request.headers.get("origin")
+    forwarded_scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    expected_origin = f"{forwarded_scheme}://{request.headers.get('host', request.url.netloc)}"
+    allowed_origins = {expected_origin, *[value.strip() for value in os.getenv("ALLOWED_ORIGINS", "").split(",") if value.strip()]}
+    if unsafe and (fetch_site == "cross-site" or (origin and origin not in allowed_origins)):
+        response = JSONResponse({"detail": "已拒绝跨站请求"}, status_code=403)
+    else:
+        response = await call_next(request)
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path == "/" or request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    if os.getenv("ENABLE_HSTS", "false").lower() == "true":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 @app.middleware("http")
@@ -560,7 +585,7 @@ def export_audit(request: Request):
     writer = csv.writer(output)
     writer.writerow(["时间戳", "用户", "事件", "对象", "结果", "详情"])
     for item in list_audit(500):
-        writer.writerow([item["created_at"], item["username"], item["event_type"], item["target"], item["result"], str(item["details"])])
+        writer.writerow([csv_safe(item["created_at"]), csv_safe(item["username"]), csv_safe(item["event_type"]), csv_safe(item["target"]), csv_safe(item["result"]), csv_safe(str(item["details"]))])
     log_event(user["username"], "audit_export")
     return StreamingResponse(iter(["\ufeff" + output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=audit.csv"})
 

@@ -12,9 +12,10 @@ from email.utils import formatdate
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .integration_store import online_sources as managed_online_sources
+from .security import validate_outbound_url
 
 
 def _secret(source, key, required=True):
@@ -32,10 +33,17 @@ def _secret(source, key, required=True):
     return value
 
 
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, new_url):
+        validate_outbound_url(new_url)
+        return super().redirect_request(request, fp, code, msg, headers, new_url)
+
+
 def _request(url, headers, timeout=30):
+    validate_outbound_url(url)
     request = Request(url, headers=headers, method="GET")
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with build_opener(_SafeRedirectHandler()).open(request, timeout=timeout) as response:
             return response.read(), response.headers.get_content_type()
     except HTTPError as error:
         details = error.read(500).decode("utf-8", errors="replace")

@@ -49,6 +49,9 @@ def authenticate(username, password, legacy_username, legacy_salt, legacy_hash):
             return {"username": username, "role": "admin", "departments": [], "enabled": True}
     user = next((item for item in _read()["users"] if item["username"] == username), None)
     if not user or not user.get("enabled", True):
+        # Keep missing/disabled usernames close to the normal password-check cost,
+        # so remote timing cannot be used as a reliable employee directory.
+        hashlib.pbkdf2_hmac("sha256", password.encode(), b"tier-rag-dummy-salt", 200_000)
         return None
     _, digest = _password(password, user["password_salt"])
     if not hmac.compare_digest(digest, user["password_hash"]):

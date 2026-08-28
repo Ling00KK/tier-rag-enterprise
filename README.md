@@ -226,6 +226,18 @@ requirements.txt
 
 ## 安全与生产部署
 
+应用默认启用 CSP、点击劫持防护、MIME 猜测防护、跨站写请求拦截和敏感接口禁止缓存。在线文档连接会拒绝本机、内网、链路本地及保留地址，并在跳转后重新校验；确需连接经审批的内网文档服务时，将准确主机名加入 `ONLINE_SOURCE_ALLOWED_HOSTS`。Office 压缩文件、图片像素和 PDF 页数也设置了资源上限。
+
+审计日志导出会中和 Excel 公式前缀，登录校验对不存在的用户名执行等量密码计算，以降低公式注入和账号枚举风险。检索文档按不可信数据处理，文档中的提示词或“忽略规则”文字不得作为模型指令执行。
+
+当前若仍通过 HTTP 访问，请保持 `COOKIE_HTTPS_ONLY=false` 和 `ENABLE_HSTS=false`。正式上线应由 IT 配置 HTTPS，确认 HTTPS 可用后同时改为：
+
+```text
+COOKIE_HTTPS_ONLY=true
+ENABLE_HSTS=true
+ALLOWED_ORIGINS=https://正式域名
+```
+
 - 管理中心的“系统日志”仅对管理员开放，记录请求路径、状态码、耗时和异常，不记录请求正文、密码、API Key 或文档内容；日志默认自动轮转。
 
 - 不要提交 `.env`、真实密码、API Key、企业文档或索引缓存。

@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import re
+import zipfile
 
 from .online_sources import load_online_sources
 
@@ -9,6 +10,10 @@ SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".xlsx", ".xls", ".txt", ".md",
     ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
 }
+MAX_ARCHIVE_MEMBERS = int(os.getenv("MAX_ARCHIVE_MEMBERS", "10000"))
+MAX_ARCHIVE_EXPANDED_BYTES = int(os.getenv("MAX_ARCHIVE_EXPANDED_BYTES", str(200 * 1024 * 1024)))
+MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", "40000000"))
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "5000"))
 
 YEAR_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(?:\s*年|\s*版|\s*版本)?(?!\d)")
 VERSION_PATTERN = re.compile(r"(?i)(?:^|[\s_\-（(])v(?:ersion)?\s*(\d+(?:\.\d+)*)")
@@ -142,6 +147,8 @@ def _load_pdf(path):
 
     items = []
     with pymupdf.open(path) as doc:
+        if len(doc) > MAX_PDF_PAGES:
+            raise RuntimeError(f"PDF 页数超过安全限制：{MAX_PDF_PAGES}")
         for page_number, page in enumerate(doc, start=1):
             text = page.get_text().strip()
             if text:
@@ -236,13 +243,38 @@ def _load_image(path):
             "pip install pillow pytesseract"
         ) from error
 
-    text = pytesseract.image_to_string(Image.open(path), lang="chi_sim+eng")
+    with Image.open(path) as image:
+        width, height = image.size
+        if width * height > MAX_IMAGE_PIXELS:
+            raise RuntimeError(f"图片像素超过安全限制：{MAX_IMAGE_PIXELS}")
+        image.load()
+        text = pytesseract.image_to_string(image, lang="chi_sim+eng")
     return [_item(path, "图片 OCR", text)] if text.strip() else []
+
+
+def _validate_archive_infos(infos):
+    if len(infos) > MAX_ARCHIVE_MEMBERS:
+        raise RuntimeError(f"Office 文件条目数超过安全限制：{MAX_ARCHIVE_MEMBERS}")
+    expanded = sum(max(0, item.file_size) for item in infos)
+    if expanded > MAX_ARCHIVE_EXPANDED_BYTES:
+        raise RuntimeError(f"Office 文件解压后超过安全限制：{MAX_ARCHIVE_EXPANDED_BYTES} 字节")
+    if any(item.flag_bits & 0x1 for item in infos):
+        raise RuntimeError("不支持加密的 Office 文件")
+
+
+def _validate_archive(path):
+    try:
+        with zipfile.ZipFile(path) as archive:
+            _validate_archive_infos(archive.infolist())
+    except zipfile.BadZipFile as error:
+        raise RuntimeError("Office 文件结构无效") from error
 
 
 def load_file(path):
     path = Path(path)
     extension = path.suffix.lower()
+    if extension in {".docx", ".xlsx"}:
+        _validate_archive(path)
     loaders = {
         ".pdf": _load_pdf,
         ".docx": _load_docx,
