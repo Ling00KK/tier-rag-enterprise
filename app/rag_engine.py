@@ -391,20 +391,36 @@ class RagEngine:
         top_results = retrieval["results"]
         if not top_results:
             self._record_metric(user, question, retrieval["permitted_chunks"], 0, retrieval["best_score"], False, started)
-            return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": INSUFFICIENT_ANSWER, "sources": [], "version_note": retrieval["version_note"], "grounded": False}
+            return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": INSUFFICIENT_ANSWER, "sources": [], "version_note": retrieval["version_note"], "grounded": False, "answer_mode": "insufficient"}
         top_results.sort(key=lambda item: item.get("effective_order", (0,)))
         context = "\n\n".join(f"[证据{index}｜来源：{item['file_name']}，{item['location']}，类型：{'增量修订' if item.get('document_kind') == 'amendment' else '完整版本'}]\n{item['text']}" for index, item in enumerate(top_results, 1))
         self._configure_generation_client()
-        response = self.client.chat.completions.create(model=self.model, messages=[{"role": "system", "content": "你是企业内部文档答疑助手。只能依据检索证据回答，不得使用常识补充、猜测或编造。资料按生效顺序从旧到新排列；同一事项冲突时，后面的增量修订覆盖前面的完整版本或旧修订，未被后续修订的内容继续有效。资料不足时只回答：未在资料中找到足够信息。每个事实性句子的末尾必须标注支持它的 [证据N]；不得引用不存在的编号。使用简洁中文回答。"}, {"role": "user", "content": f"用户问题：\n{question}\n\n检索证据：\n{context}"}], temperature=0, max_tokens=500)
-        answer = (response.choices[0].message.content or INSUFFICIENT_ANSWER).strip()
-        grounded = answer != INSUFFICIENT_ANSWER and _has_valid_citations(answer, len(top_results))
+        system_prompt = "你是企业内部文档答疑助手。只能依据检索证据回答，不得使用常识补充、猜测或编造。资料按生效顺序从旧到新排列；同一事项冲突时，后面的增量修订覆盖前面的完整版本或旧修订，未被后续修订的内容继续有效。资料不足时只回答：未在资料中找到足够信息。每个事实性句子的末尾必须标注支持它的 [证据N]；不得引用不存在的编号。使用简洁中文回答。"
+        answer, grounded, answer_mode = INSUFFICIENT_ANSWER, False, "insufficient"
+        for attempt in range(2):
+            retry_note = "\n\n上一次回答未通过引用校验。请重新回答，并确保每个事实都直接来自证据且带有正确的 [证据N]。" if attempt else ""
+            try:
+                response = self.client.chat.completions.create(model=self.model, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": f"用户问题：\n{question}\n\n检索证据：\n{context}{retry_note}"}], temperature=0, max_tokens=500)
+                candidate = (response.choices[0].message.content or INSUFFICIENT_ANSWER).strip()
+            except Exception:
+                continue
+            if candidate == INSUFFICIENT_ANSWER or not _has_valid_citations(candidate, len(top_results)):
+                continue
+            if self._verify_answer(question, candidate, context):
+                answer, grounded, answer_mode = candidate, True, "generated"
+                break
         if grounded:
-            grounded = self._verify_answer(question, answer, context)
-        if not grounded:
-            answer = INSUFFICIENT_ANSWER
-            sources = []
-        else:
             used = set(_citation_ids(answer))
-            sources = [{"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500], "version_label": item.get("version_label"), "document_kind": item.get("document_kind", "full")} for index, item in enumerate(top_results, 1) if index in used]
+        else:
+            best_index = max(range(len(top_results)), key=lambda index: top_results[index].get("rerank_score", 0.0))
+            best = top_results[best_index]
+            excerpt = best["text"].strip()[:800]
+            if len(best["text"].strip()) > 800:
+                excerpt += "……"
+            answer = f"已找到与问题相关的资料。回答模型未能稳定完成归纳，以下直接显示资料原文：\n\n{excerpt} [证据{best_index + 1}]"
+            used = {best_index + 1}
+            grounded, answer_mode = True, "extractive_fallback"
+            retrieval["version_note"] += "；回答模型未稳定完成归纳，已展示相关原文"
+        sources = [{"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500], "version_label": item.get("version_label"), "document_kind": item.get("document_kind", "full")} for index, item in enumerate(top_results, 1) if index in used]
         self._record_metric(user, question, retrieval["permitted_chunks"], retrieval["candidate_count"], retrieval["best_score"], grounded, started)
-        return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": answer, "sources": sources, "version_note": retrieval["version_note"], "grounded": grounded}
+        return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": answer, "sources": sources, "version_note": retrieval["version_note"], "grounded": grounded, "answer_mode": answer_mode}

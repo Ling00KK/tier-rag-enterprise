@@ -50,8 +50,10 @@ class FakeResponse:
     def __init__(self, content): self.choices = [FakeChoice(content)]
 
 class FakeCompletions:
-    def __init__(self, outputs): self.outputs = iter(outputs)
-    def create(self, **_): return FakeResponse(next(self.outputs))
+    def __init__(self, outputs): self.outputs, self.calls = iter(outputs), 0
+    def create(self, **_):
+        self.calls += 1
+        return FakeResponse(next(self.outputs))
 
 class FakeClient:
     def __init__(self, outputs): self.chat = type("Chat", (), {"completions": FakeCompletions(outputs)})()
@@ -65,6 +67,32 @@ def test_verifier_rejects_explicitly_unsupported_answer(tmp_path):
     engine = RagEngine(tmp_path, "http://example/v1", "model")
     engine.client = FakeClient(["UNSUPPORTED"])
     assert not engine._verify_answer("问题", "编造回答。[证据1]", "[证据1] 原文")
+
+def retrieval_result():
+    return {"results": [{"file_name": "制度.pdf", "file_path": "制度.pdf", "location": "第 3 页", "text": "员工忘记打卡应在当天提交补卡申请。", "rerank_score": 0.99, "effective_order": (2026,), "document_kind": "full"}], "version_note": "已使用最新版本", "permitted_chunks": 1, "best_score": 0.99, "candidate_count": 1}
+
+def test_answer_retries_invalid_citation_then_succeeds(tmp_path, monkeypatch):
+    engine = RagEngine(tmp_path, "http://example/v1", "model")
+    engine.client = FakeClient(["应当补卡。", "应当在当天提交补卡申请。[证据1]"])
+    monkeypatch.setattr(engine, "retrieve", lambda *_: retrieval_result())
+    monkeypatch.setattr(engine, "_configure_generation_client", lambda: None)
+    monkeypatch.setattr(engine, "_verify_answer", lambda *_: True)
+    monkeypatch.setattr(engine, "_record_metric", lambda *_: None)
+    result = engine.ask("忘记打卡怎么办", {"username": "test"})
+    assert result["answer_mode"] == "generated"
+    assert result["grounded"] and result["sources"][0]["location"] == "第 3 页"
+    assert engine.client.chat.completions.calls == 2
+
+def test_invalid_generated_answers_fall_back_to_verbatim_evidence(tmp_path, monkeypatch):
+    engine = RagEngine(tmp_path, "http://example/v1", "model")
+    engine.client = FakeClient(["没有引用", None])
+    monkeypatch.setattr(engine, "retrieve", lambda *_: retrieval_result())
+    monkeypatch.setattr(engine, "_configure_generation_client", lambda: None)
+    monkeypatch.setattr(engine, "_record_metric", lambda *_: None)
+    result = engine.ask("忘记打卡怎么办", {"username": "test"})
+    assert result["answer_mode"] == "extractive_fallback"
+    assert "员工忘记打卡应在当天提交补卡申请" in result["answer"]
+    assert result["grounded"] and result["sources"]
 
 def test_embedding_cache_reuses_unchanged_chunks(tmp_path, monkeypatch):
     monkeypatch.setenv("VECTOR_CACHE_PATH", str(tmp_path / "vectors.sqlite3"))
