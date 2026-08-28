@@ -227,7 +227,7 @@ def logout(request: Request):
 
 @app.get("/api/status")
 def status(request: Request):
-    require_login(request)
+    current_user(request)
     return engine.status()
 
 

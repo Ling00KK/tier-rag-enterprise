@@ -33,3 +33,18 @@ def test_existing_session_reloads_permissions_and_disabled_user_is_rejected(tmp_
         main.current_user(request)
     assert error.value.status_code == 401
     assert request.session == {}
+
+
+def test_status_endpoint_revalidates_existing_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACCESS_CONTROL_CONFIG", str(tmp_path / "access.json"))
+    access_control.save_user({"username": "employee02", "password": "secret12", "role": "employee", "departments": [], "enabled": True})
+    request = FakeRequest("employee02")
+    monkeypatch.setattr(main.engine, "status", lambda: {"ready": True})
+
+    assert main.status(request) == {"ready": True}
+
+    access_control.save_user({"username": "employee02", "password": None, "role": "employee", "departments": [], "enabled": False})
+    with pytest.raises(HTTPException) as error:
+        main.status(request)
+    assert error.value.status_code == 401
+    assert request.session == {}
