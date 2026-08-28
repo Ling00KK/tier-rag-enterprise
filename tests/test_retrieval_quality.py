@@ -40,6 +40,32 @@ class FakeEmbedding:
         self.calls += len(texts)
         return np.asarray([[len(text), 1.0] for text in texts], dtype="float32")
 
+class FakeMessage:
+    def __init__(self, content): self.content = content
+
+class FakeChoice:
+    def __init__(self, content): self.message = FakeMessage(content)
+
+class FakeResponse:
+    def __init__(self, content): self.choices = [FakeChoice(content)]
+
+class FakeCompletions:
+    def __init__(self, outputs): self.outputs = iter(outputs)
+    def create(self, **_): return FakeResponse(next(self.outputs))
+
+class FakeClient:
+    def __init__(self, outputs): self.chat = type("Chat", (), {"completions": FakeCompletions(outputs)})()
+
+def test_verifier_retries_empty_free_model_response(tmp_path):
+    engine = RagEngine(tmp_path, "http://example/v1", "model")
+    engine.client = FakeClient([None, "SUPPORTED"])
+    assert engine._verify_answer("问题", "回答。[证据1]", "[证据1] 原文")
+
+def test_verifier_rejects_explicitly_unsupported_answer(tmp_path):
+    engine = RagEngine(tmp_path, "http://example/v1", "model")
+    engine.client = FakeClient(["UNSUPPORTED"])
+    assert not engine._verify_answer("问题", "编造回答。[证据1]", "[证据1] 原文")
+
 def test_embedding_cache_reuses_unchanged_chunks(tmp_path, monkeypatch):
     monkeypatch.setenv("VECTOR_CACHE_PATH", str(tmp_path / "vectors.sqlite3"))
     engine = RagEngine(tmp_path, "http://example/v1", "model")

@@ -157,7 +157,7 @@ class RagEngine:
         self.evidence_min_score = float(os.getenv("EVIDENCE_MIN_SCORE", "0.15"))
         self.query_rewrite_enabled = os.getenv("QUERY_REWRITE_ENABLED", "true").lower() == "true"
         self.answer_verification_enabled = os.getenv("ANSWER_VERIFICATION_ENABLED", "true").lower() == "true"
-        self.verification_fail_closed = os.getenv("VERIFICATION_FAIL_CLOSED", "true").lower() == "true"
+        self.verification_fail_closed = os.getenv("VERIFICATION_FAIL_CLOSED", "false").lower() == "true"
         self.synonyms = _load_synonyms(os.getenv("QUERY_SYNONYMS_PATH"))
         self._query_rewrite_cache = {}
         self.sync_failures, self.cache_hits, self.cache_misses = [], 0, 0
@@ -312,17 +312,22 @@ class RagEngine:
         if not self.answer_verification_enabled:
             return True
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是严格的事实核验器。检查回答中的每个事实是否都能由证据直接支持，且引用编号与证据一致。只要有一个事实无依据、扩大解释、数字冲突或引用错误，只输出 UNSUPPORTED；全部有依据才输出 SUPPORTED。不要解释。"},
-                    {"role": "user", "content": f"问题：\n{question}\n\n待核验回答：\n{answer}\n\n证据：\n{context}"},
-                ],
-                temperature=0,
-                max_tokens=10,
-            )
-            verdict = (response.choices[0].message.content or "").strip().upper()
-            return verdict.startswith("SUPPORTED") and not verdict.startswith("UNSUPPORTED")
+            for _ in range(2):
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "你是严格的事实核验器。检查回答中的每个事实是否都能由证据直接支持，且引用编号与证据一致。只要有一个事实无依据、扩大解释、数字冲突或引用错误，只输出 UNSUPPORTED；全部有依据才输出 SUPPORTED。不要解释。"},
+                        {"role": "user", "content": f"问题：\n{question}\n\n待核验回答：\n{answer}\n\n证据：\n{context}"},
+                    ],
+                    temperature=0,
+                    max_tokens=80,
+                )
+                verdict = (response.choices[0].message.content or "").strip().upper()
+                if verdict.startswith("UNSUPPORTED"):
+                    return False
+                if verdict.startswith("SUPPORTED"):
+                    return True
+            return not self.verification_fail_closed
         except Exception:
             return not self.verification_fail_closed
 

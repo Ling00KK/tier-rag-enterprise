@@ -142,6 +142,8 @@ python scripts/test_permission_demo_live.py \
 | `EVIDENCE_MIN_SCORE` | 允许生成答案的最低 Reranker 证据分数 |
 | `ANSWER_VERIFICATION_ENABLED` | 是否在答案生成后执行独立证据一致性核验 |
 | `VERIFICATION_FAIL_CLOSED` | 核验服务异常时是否安全拒答 |
+
+`openrouter/free` 会在不同免费模型之间动态路由，个别模型可能返回空的核验结果，建议保持 `VERIFICATION_FAIL_CLOSED=false`：明确核验不通过时仍会拒答，核验器不可用时则依靠相关度门槛和强制有效引用继续回答。切换到稳定的公司模型后，可改为 `true` 获得最严格的故障拒答策略。
 | `CLICKHOUSE_ENABLED` | 是否启用 ClickHouse 向量库 |
 | `CLICKHOUSE_REQUIRED` | ClickHouse 故障时是否禁止降级 |
 | `CLICKHOUSE_HOST/PORT` | ClickHouse 服务地址和 HTTP 端口 |
