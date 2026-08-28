@@ -1,4 +1,6 @@
 from app import admin_store
+import pytest
+from contextlib import contextmanager
 
 
 def test_audit_and_evaluation_storage(tmp_path, monkeypatch):
@@ -18,6 +20,36 @@ def test_audit_and_evaluation_storage(tmp_path, monkeypatch):
     feedback = admin_store.feedback_summary()
     assert feedback["total"] == 1 and feedback["helpful_rate"] == 0.0
     assert admin_store.delete_evaluation_case(case_id)
+
+
+def test_database_context_closes_connection(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_DB_PATH", str(tmp_path / "admin.sqlite3"))
+    with admin_store._database() as database:
+        database.execute("SELECT 1").fetchone()
+    with pytest.raises(admin_store.sqlite3.ProgrammingError, match="closed"):
+        database.execute("SELECT 1")
+
+
+def test_audit_failure_is_reported(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_DB_PATH", str(tmp_path / "blocked" / "admin.sqlite3"))
+
+    @contextmanager
+    def broken_database():
+        raise OSError("disk is full")
+        yield
+
+    class FakeLogger:
+        called = False
+        def exception(self, *_args, **_kwargs):
+            self.called = True
+
+    logger = FakeLogger()
+    monkeypatch.setattr(admin_store, "_database", broken_database)
+    monkeypatch.setattr(admin_store, "runtime_logger", logger)
+    assert admin_store.log_event("tier", "test") is False
+    assert admin_store.audit_status()["healthy"] is False
+    assert "disk is full" in admin_store.audit_status()["last_error"]
+    assert logger.called
 
 
 if __name__ == "__main__":

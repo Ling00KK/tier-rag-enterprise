@@ -19,8 +19,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from .rag_engine import RagEngine
 from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
-from .access_control import add_department, authenticate, can_access, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
-from .admin_store import add_evaluation_case, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
+from .access_control import add_department, authenticate, can_access, get_active_user, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
+from .admin_store import add_evaluation_case, audit_status, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
 from .model_store import activate_model_config, delete_model_config, list_model_configs, load_model_config, save_model_config, test_model_config
 from .runtime_log import read_runtime_logs, runtime_logger
 
@@ -169,12 +169,12 @@ def require_login(request):
 
 def current_user(request):
     require_login(request)
-    user = request.session.get("user")
-    if not user and request.session.get("username") == USERNAME:
-        user = {"username": USERNAME, "role": "admin", "departments": [], "enabled": True}
-        request.session["user"] = user
+    username = request.session.get("username")
+    user = get_active_user(username, USERNAME) if username else None
     if not user:
+        request.session.clear()
         raise HTTPException(status_code=401, detail="登录信息已更新，请重新登录")
+    request.session["user"] = user
     return user
 
 
@@ -544,7 +544,7 @@ def dashboard(request: Request):
 @app.get("/api/admin/audit")
 def audit(request: Request, limit: int = 100):
     require_admin(request)
-    return {"items": list_audit(limit)}
+    return {"items": list_audit(limit), "status": audit_status()}
 
 
 @app.get("/api/admin/system-logs")

@@ -9,21 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}
+      APP_PASSWORD_SALT: ci-test-salt
+      APP_PASSWORD_HASH: ci-test-hash
+      SESSION_SECRET: ci-session-secret-at-least-32-characters
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: pip install numpy cryptography openai pymupdf python-docx openpyxl pandas xlrd pillow pytesseract boto3
-      - run: python -m py_compile app/clickhouse_store.py app/model_store.py scripts/migrate_to_clickhouse.py
-      - run: python tests/test_clickhouse_store.py
-      - run: python tests/test_model_store.py
-      - run: python tests/test_access_control.py
-      - run: python tests/test_admin_store.py
-      - run: python tests/test_version_chain.py
-      - run: python tests/test_integration_delete.py
+      - run: pip install pytest fastapi uvicorn itsdangerous python-multipart numpy cryptography openai pymupdf python-docx openpyxl pandas xlrd pillow pytesseract boto3
+      - run: python -m compileall -q app scripts tests
+      - run: python -m pytest -q tests
       - run: node --check app/static/app.js

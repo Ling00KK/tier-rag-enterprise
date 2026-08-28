@@ -9,6 +9,7 @@ def test_department_permissions(tmp_path, monkeypatch):
         "role": "employee", "departments": ["财务部"], "enabled": True,
     })
     user = access_control.authenticate("finance01", "secret12", "tier", b"salt", "invalid")
+    assert access_control.get_active_user("finance01", "tier")["departments"] == ["财务部"]
     assert access_control.can_access("公共.pdf", user)
     access_control.set_document_access("财务.pdf", "departments", ["财务部"])
     access_control.set_document_access("人事.pdf", "departments", ["人事部"])
@@ -22,6 +23,11 @@ def test_department_permissions(tmp_path, monkeypatch):
     assert access_control.can_access("在线制度", user, online)
     access_control.remove_document_access("在线制度")
     assert not access_control.can_access("在线制度", user, online)
+    access_control.save_user({
+        "username": "finance01", "password": None, "display_name": "财务员工",
+        "role": "employee", "departments": ["财务部"], "enabled": False,
+    })
+    assert access_control.get_active_user("finance01", "tier") is None
 
 
 if __name__ == "__main__":

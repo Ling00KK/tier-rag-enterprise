@@ -1,9 +1,17 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+
+from .runtime_log import runtime_logger
+
+
+_audit_lock = threading.Lock()
+_audit_health = {"healthy": True, "last_error": None, "last_failed_at": None}
 
 
 def _path():
@@ -14,25 +22,44 @@ def _path():
     return config_dir / "admin.sqlite3"
 
 
+@contextmanager
 def _database():
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     database = sqlite3.connect(path)
-    database.row_factory = sqlite3.Row
-    database.execute("CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, created_at REAL NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL, target TEXT, result TEXT NOT NULL, details TEXT)")
-    database.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC)")
-    database.execute("CREATE TABLE IF NOT EXISTS evaluation_cases (id TEXT PRIMARY KEY, created_at REAL NOT NULL, question TEXT NOT NULL, expected_file TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)")
-    database.execute("CREATE TABLE IF NOT EXISTS evaluation_runs (id TEXT PRIMARY KEY, created_at REAL NOT NULL, case_id TEXT NOT NULL, passed INTEGER NOT NULL, matched_files TEXT NOT NULL, best_score REAL NOT NULL, latency_ms INTEGER NOT NULL)")
-    database.execute("CREATE TABLE IF NOT EXISTS answer_feedback (id TEXT PRIMARY KEY, created_at REAL NOT NULL, answer_id TEXT NOT NULL UNIQUE, username TEXT NOT NULL, question_hash TEXT NOT NULL, helpful INTEGER NOT NULL, comment TEXT)")
-    return database
+    try:
+        database.row_factory = sqlite3.Row
+        database.execute("CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, created_at REAL NOT NULL, username TEXT NOT NULL, event_type TEXT NOT NULL, target TEXT, result TEXT NOT NULL, details TEXT)")
+        database.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC)")
+        database.execute("CREATE TABLE IF NOT EXISTS evaluation_cases (id TEXT PRIMARY KEY, created_at REAL NOT NULL, question TEXT NOT NULL, expected_file TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)")
+        database.execute("CREATE TABLE IF NOT EXISTS evaluation_runs (id TEXT PRIMARY KEY, created_at REAL NOT NULL, case_id TEXT NOT NULL, passed INTEGER NOT NULL, matched_files TEXT NOT NULL, best_score REAL NOT NULL, latency_ms INTEGER NOT NULL)")
+        database.execute("CREATE TABLE IF NOT EXISTS answer_feedback (id TEXT PRIMARY KEY, created_at REAL NOT NULL, answer_id TEXT NOT NULL UNIQUE, username TEXT NOT NULL, question_hash TEXT NOT NULL, helpful INTEGER NOT NULL, comment TEXT)")
+        yield database
+        database.commit()
+    except Exception:
+        database.rollback()
+        raise
+    finally:
+        database.close()
 
 
 def log_event(username, event_type, target="", result="success", details=None):
     try:
         with _database() as database:
             database.execute("INSERT INTO audit_events VALUES (?, ?, ?, ?, ?, ?, ?)", (uuid.uuid4().hex, time.time(), username or "anonymous", event_type, target[:300], result, json.dumps(details or {}, ensure_ascii=False)))
-    except Exception:
-        pass
+        with _audit_lock:
+            _audit_health["healthy"] = True
+        return True
+    except Exception as error:
+        with _audit_lock:
+            _audit_health.update({"healthy": False, "last_error": str(error)[:500], "last_failed_at": time.time()})
+        runtime_logger.exception("审计日志写入失败", extra={"path": str(_path())})
+        return False
+
+
+def audit_status():
+    with _audit_lock:
+        return dict(_audit_health)
 
 
 def list_audit(limit=100):

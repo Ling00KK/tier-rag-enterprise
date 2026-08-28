@@ -55,6 +55,15 @@ def authenticate(username, password, legacy_username, legacy_salt, legacy_hash):
         return None
     return {key: user.get(key) for key in ("username", "display_name", "role", "departments", "enabled")}
 
+def get_active_user(username, legacy_username):
+    """Return fresh authorization data so session cookies never become an ACL cache."""
+    if username == legacy_username:
+        return {"username": username, "role": "admin", "departments": [], "enabled": True}
+    user = next((item for item in _read()["users"] if item["username"] == username), None)
+    if not user or not user.get("enabled", True):
+        return None
+    return {key: user.get(key) for key in ("username", "display_name", "role", "departments", "enabled")}
+
 def list_access_data():
     data = _read()
     users = [{key: item.get(key) for key in ("username", "display_name", "role", "departments", "enabled")} for item in data["users"]]

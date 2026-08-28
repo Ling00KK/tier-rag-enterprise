@@ -7,12 +7,11 @@ import threading
 import time
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
-import faiss
 import numpy as np
 from openai import OpenAI
-from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from .access_control import can_access
 from .access_control import get_document_access
@@ -112,13 +111,21 @@ class RagEngine:
         config_dir = Path(os.getenv("INTEGRATIONS_CONFIG", "/data/config/integrations.json")).parent
         return config_dir / "embedding_cache.sqlite3"
 
+    @contextmanager
     def _database(self):
         path = self._cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path)
-        connection.execute("CREATE TABLE IF NOT EXISTS embeddings (content_hash TEXT PRIMARY KEY, model TEXT NOT NULL, dimension INTEGER NOT NULL, vector BLOB NOT NULL)")
-        connection.execute("CREATE TABLE IF NOT EXISTS retrieval_events (created_at REAL, username TEXT, question_hash TEXT, permitted_chunks INTEGER, candidates INTEGER, best_score REAL, answered INTEGER, latency_ms INTEGER)")
-        return connection
+        try:
+            connection.execute("CREATE TABLE IF NOT EXISTS embeddings (content_hash TEXT PRIMARY KEY, model TEXT NOT NULL, dimension INTEGER NOT NULL, vector BLOB NOT NULL)")
+            connection.execute("CREATE TABLE IF NOT EXISTS retrieval_events (created_at REAL, username TEXT, question_hash TEXT, permitted_chunks INTEGER, candidates INTEGER, best_score REAL, answered INTEGER, latency_ms INTEGER)")
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _encode_documents(self, chunks):
         model_name = "BAAI/bge-small-zh-v1.5"
@@ -160,6 +167,7 @@ class RagEngine:
                 chunk["_document_id"] = hashlib.sha256(path.encode()).hexdigest()[:32]
                 chunk["_chunk_id"] = hashlib.sha256((path + "\0" + chunk.get("location", "") + "\0" + chunk["text"]).encode()).hexdigest()
             if not hasattr(self, "embedding"):
+                from sentence_transformers import CrossEncoder, SentenceTransformer
                 self.embedding = SentenceTransformer("BAAI/bge-small-zh-v1.5")
                 self.reranker = CrossEncoder("BAAI/bge-reranker-base")
                 self._configure_generation_client()
@@ -220,6 +228,7 @@ class RagEngine:
                 if self.clickhouse_required:
                     raise
         if not vector_pairs:
+            import faiss
             subset = self.vectors[[chunk["_vector_id"] for chunk in search_chunks]]
             index = faiss.IndexFlatIP(subset.shape[1]); index.add(subset)
             vector_scores, vector_ids = index.search(query_vector, k=recall_size)
