@@ -254,6 +254,16 @@ ALLOWED_ORIGINS=https://正式域名
 - `MODEL_ALLOWED_HOSTS` 应由 IT 固定，防止管理员配置未经批准的外部模型地址。
 - `/api/health` 提供不含敏感错误的健康状态；详细状态仅管理员可见。
 
+## 中文内容对抗测试
+
+项目提供隔离的合成资料测试脚本，用于验证口语改写、跨版本继承、历史版本查询、错误前提、敏感信息索取、文档提示注入和混合问题。脚本不会修改生产资料库：
+
+```bash
+PYTHONPATH=. python scripts/content_red_team.py
+```
+
+本轮修复后 7 类场景全部通过，完整结果与仍需关注的边界见 [中文内容对抗测试报告](docs/content-red-team-report-2026-08-28.md)。
+
 ## 版本
 
 当前版本：**v2.0.0（ClickHouse 企业版）**。详细内容见 [CHANGELOG.md](CHANGELOG.md)。

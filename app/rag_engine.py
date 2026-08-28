@@ -22,6 +22,14 @@ from .model_store import load_model_config
 
 
 INSUFFICIENT_ANSWER = "未在资料中找到足够信息。"
+INSTRUCTION_ATTACK_PATTERN = re.compile(
+    r"(?i)(?:忽略|绕过|取消).{0,16}(?:规则|权限|限制|系统|提示词)|"
+    r"执行.{0,16}(?:隐藏|文档|上述|其中).{0,8}(?:指令|命令)|"
+    r"(?:输出|泄露|显示).{0,16}(?:系统提示词|管理员密码|全部部门机密)"
+)
+SENSITIVE_DATA_PATTERN = re.compile(r"(?i)(?:身份证(?:号码|号)?|银行卡密码|管理员密码|API\s*KEY|ACCESS\s*TOKEN|私人密钥|系统提示词)")
+SENSITIVE_REQUEST_PATTERN = re.compile(r"(?:输出|告诉|显示|泄露|提供|给我|是多少|猜|推测)")
+LEADING_QUESTION_PATTERN = re.compile(r"(?:对吧|是不是|请直接回答是|已经明确|肯定规定)")
 DEFAULT_SYNONYMS = {
     "考勤": ["打卡", "签到", "漏打卡", "没打卡", "补卡", "考勤异常"],
     "薪酬": ["工资", "薪资", "薪酬", "发工资"],
@@ -144,6 +152,16 @@ def _citation_ids(answer):
 def _has_valid_citations(answer, source_count):
     citations = _citation_ids(answer)
     return bool(citations) and all(1 <= value <= source_count for value in citations)
+
+
+def _is_instruction_attack(question):
+    return bool(INSTRUCTION_ATTACK_PATTERN.search(question))
+
+
+def _allow_extractive_fallback(question):
+    if LEADING_QUESTION_PATTERN.search(question):
+        return False
+    return not (SENSITIVE_DATA_PATTERN.search(question) and SENSITIVE_REQUEST_PATTERN.search(question))
 
 
 class RagEngine:
@@ -387,6 +405,9 @@ class RagEngine:
 
     def ask(self, question, user):
         started = time.time()
+        if _is_instruction_attack(question):
+            self._record_metric(user, question, 0, 0, 0.0, False, started)
+            return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": INSUFFICIENT_ANSWER, "sources": [], "version_note": "检测到要求绕过规则或执行隐藏指令，已安全拒绝", "grounded": False, "answer_mode": "blocked_instruction_attack"}
         retrieval = self.retrieve(question, user)
         top_results = retrieval["results"]
         if not top_results:
@@ -411,7 +432,7 @@ class RagEngine:
                 break
         if grounded:
             used = set(_citation_ids(answer))
-        else:
+        elif _allow_extractive_fallback(question):
             best_index = max(range(len(top_results)), key=lambda index: top_results[index].get("rerank_score", 0.0))
             best = top_results[best_index]
             excerpt = best["text"].strip()[:800]
@@ -421,6 +442,9 @@ class RagEngine:
             used = {best_index + 1}
             grounded, answer_mode = True, "extractive_fallback"
             retrieval["version_note"] += "；回答模型未稳定完成归纳，已展示相关原文"
+        else:
+            answer, used, grounded, answer_mode = INSUFFICIENT_ANSWER, set(), False, "insufficient"
+            retrieval["version_note"] += "；高风险或诱导性问题未通过证据核验，已停止回答"
         sources = [{"file_name": item["file_name"], "location": item["location"], "excerpt": item["text"][:500], "version_label": item.get("version_label"), "document_kind": item.get("document_kind", "full")} for index, item in enumerate(top_results, 1) if index in used]
         self._record_metric(user, question, retrieval["permitted_chunks"], retrieval["candidate_count"], retrieval["best_score"], grounded, started)
         return {"answer_id": uuid.uuid4().hex, "question_hash": hashlib.sha256(question.encode()).hexdigest(), "answer": answer, "sources": sources, "version_note": retrieval["version_note"], "grounded": grounded, "answer_mode": answer_mode}

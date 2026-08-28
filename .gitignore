@@ -13,3 +13,6 @@ __pycache__/
 *.faiss
 *.npy
 *.log
+*.tar
+*.tar.gz
+deploy-*/
