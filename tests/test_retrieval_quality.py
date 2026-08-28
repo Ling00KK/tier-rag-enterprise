@@ -1,6 +1,6 @@
 import numpy as np
 
-from app.rag_engine import RagEngine, _bm25, _split_documents
+from app.rag_engine import RagEngine, _bm25, _citation_ids, _expand_with_synonyms, _has_valid_citations, _parse_query_rewrites, _split_documents
 
 def document(text, location="第 1 页"):
     return {"file_name": "制度.pdf", "file_path": "制度.pdf", "location": location, "text": text}
@@ -19,6 +19,20 @@ def test_chunks_keep_overlap_context():
     chunks = _split_documents([document(text)], chunk_size=300, overlap=30)
     assert len(chunks) >= 2
     assert "A" * 20 in chunks[-1]["text"]
+
+def test_employee_wording_expands_to_policy_terms():
+    variants = _expand_with_synonyms("没来上班会怎么样", {"缺勤": ["没来上班", "未到岗", "旷工"]})
+    assert any("旷工" in value and "缺勤" in value for value in variants)
+
+def test_query_rewrite_parser_accepts_json_and_plain_lines():
+    assert _parse_query_rewrites('{"queries":["漏打卡处理", "考勤异常流程"]}') == ["漏打卡处理", "考勤异常流程"]
+    assert _parse_query_rewrites("1. 补卡规定\n2. 忘记签到") == ["补卡规定", "忘记签到"]
+
+def test_grounded_answer_requires_only_existing_citations():
+    assert _citation_ids("按制度处理。[证据1]") == [1]
+    assert _has_valid_citations("按制度处理。[证据1]", 2)
+    assert not _has_valid_citations("按制度处理。", 2)
+    assert not _has_valid_citations("按制度处理。[证据3]", 2)
 
 class FakeEmbedding:
     def __init__(self): self.calls = 0

@@ -9,11 +9,11 @@
 - 独立网页与 FastAPI 后端，不依赖 Streamlit
 - 用户名、密码哈希验证及登录失败限流
 - 支持 PDF、DOCX、XLSX、XLS、TXT、Markdown 与常见图片 OCR
-- BM25 + BGE/FAISS 混合召回、RRF 融合及 `bge-reranker-base` Top 3 重排
+- 问题改写、企业同义词扩展、多路 BM25 + BGE/FAISS/ClickHouse 召回、RRF 融合及 `bge-reranker-base` Top 3 重排
 - 段落边界切分、上下文重叠和 Excel 短行保留
 - SQLite 增量向量缓存与低相关度拒答
 - 接入 OpenAI-compatible API，可对接公司内部 vLLM
-- 回答附带来源；资料不足时明确说明未找到，避免编造
+- 回答强制逐句引用证据，并经过独立事实一致性复核；资料不足、引用无效或核验失败时明确拒答
 - 同系列制度默认选择最新版本，问题指定年份时可查询历史版本
 - 资料发生变化后，在下一次提问时自动检查并更新索引
 - WPS/金山文档与腾讯文档在线来源连接器，可定时或手动同步
@@ -137,6 +137,11 @@ python scripts/test_permission_demo_live.py \
 | `INTEGRATIONS_CONFIG` | 加密后的在线连接配置保存位置 |
 | `MODEL_CONFIG_PATH` | 管理员模型配置的加密保存位置 |
 | `MODEL_ALLOWED_HOSTS` | 允许管理员连接的模型主机白名单 |
+| `QUERY_REWRITE_ENABLED` | 是否调用当前模型生成多种制度检索表达 |
+| `QUERY_SYNONYMS_PATH` | 企业同义词 JSON 文件位置，可由 IT 持续维护 |
+| `EVIDENCE_MIN_SCORE` | 允许生成答案的最低 Reranker 证据分数 |
+| `ANSWER_VERIFICATION_ENABLED` | 是否在答案生成后执行独立证据一致性核验 |
+| `VERIFICATION_FAIL_CLOSED` | 核验服务异常时是否安全拒答 |
 | `CLICKHOUSE_ENABLED` | 是否启用 ClickHouse 向量库 |
 | `CLICKHOUSE_REQUIRED` | ClickHouse 故障时是否禁止降级 |
 | `CLICKHOUSE_HOST/PORT` | ClickHouse 服务地址和 HTTP 端口 |

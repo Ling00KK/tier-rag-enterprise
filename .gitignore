@@ -3,7 +3,8 @@ source/*
 !source/.gitkeep
 !source/online_sources.example.json
 cache/
-config/
+config/*
+!config/query_synonyms.json
 __pycache__/
 *.py[cod]
 .venv/
