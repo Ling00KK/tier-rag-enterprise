@@ -20,10 +20,12 @@ from .rag_engine import RagEngine
 from .document_loader import SUPPORTED_EXTENSIONS
 from .integration_store import delete_online_source, list_integrations, save_integration, s3_config
 from .access_control import add_department, authenticate, can_access, get_active_user, get_document_access, list_access_data, remove_document_access, save_user, set_document_access
-from .admin_store import add_evaluation_case, audit_status, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, log_event, save_evaluation_run, save_feedback, update_evaluation_case
+from .admin_store import add_evaluation_case, audit_status, delete_evaluation_case, evaluation_summary, feedback_summary, list_audit, list_evaluation_cases, list_evaluation_runs, log_event, save_evaluation_run, save_feedback, update_evaluation_case
+from .document_workflow import begin_publish, create_draft, finish_publish, get_record, list_records, purge_document, recycle_document, remove_draft, restore_document, update_draft_size
 from .model_store import activate_model_config, delete_model_config, list_model_configs, load_model_config, save_model_config, test_model_config
 from .runtime_log import read_runtime_logs, runtime_logger
 from .security import csv_safe
+from .task_manager import get_task, list_tasks, submit_task
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -167,6 +169,8 @@ class DeleteDocumentRequest(BaseModel):
 class EvaluationCaseRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
     expected_file: str = Field(min_length=1, max_length=255)
+    expected_terms: list[str] = Field(default_factory=list, max_length=20)
+    forbidden_terms: list[str] = Field(default_factory=list, max_length=20)
     enabled: bool = True
 
 
@@ -272,12 +276,14 @@ def admin_health(request: Request):
 @app.post("/api/sync")
 def sync_knowledge_base(request: Request):
     user = require_admin(request)
-    try:
+    def work(progress):
+        progress(10, "正在读取资料")
         engine.load(force=True)
+        progress(90, "正在发布新索引")
         log_event(user["username"], "knowledge_sync", details=engine.status())
-        return {"ok": True, **engine.status()}
-    except Exception as error:
-        raise HTTPException(status_code=503, detail=f"知识库同步失败：{error}") from error
+        return engine.status()
+    task_id = submit_task("knowledge_sync", "全部资料", user["username"], work)
+    return {"ok": True, "task_id": task_id, "status": "pending"}
 
 
 @app.get("/api/integrations")
@@ -312,8 +318,9 @@ async def upload_document(
     extension = Path(safe_name).suffix.lower()
     if extension not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="暂不支持该文件格式")
-    target = engine.source_dir / safe_name
-    target.parent.mkdir(parents=True, exist_ok=True)
+    selected_departments = [value for value in departments.split(",") if value]
+    draft = create_draft(engine.source_dir, safe_name, storage, cloud_config_id, access_scope, selected_departments, 0, user["username"])
+    target = Path(draft["stored_path"])
     size = 0
     try:
         with target.open("wb") as output:
@@ -322,32 +329,103 @@ async def upload_document(
                 if size > 50 * 1024 * 1024:
                     raise HTTPException(status_code=413, detail="单个文件不能超过 50MB")
                 output.write(chunk)
-        if storage == "cloud":
-            config = s3_config(cloud_config_id)
-            import boto3
-            client = boto3.client(
-                "s3",
-                region_name=config.get("region") or None,
-                endpoint_url=config.get("endpoint_url") or None,
-                aws_access_key_id=config["access_key"],
-                aws_secret_access_key=config["secret_key"],
-            )
-            key = (config.get("prefix", "knowledge-base").strip("/") + "/" + safe_name).lstrip("/")
-            client.upload_file(str(target), config["bucket"], key)
-        set_document_access(safe_name, access_scope, [value for value in departments.split(",") if value])
-        engine.load(force=True)
-        log_event(user["username"], "document_upload", safe_name, details={"size": size, "storage": storage, "access_scope": access_scope})
-        return {"ok": True, "file_name": safe_name, "size": size, "storage": storage}
+        update_draft_size(engine.source_dir, draft["id"], size)
+        log_event(user["username"], "document_draft", safe_name, details={"size": size, "storage": storage, "access_scope": access_scope})
+        return {"ok": True, "record_id": draft["id"], "file_name": safe_name, "size": size, "storage": storage, "status": "draft"}
     except HTTPException:
-        if target.exists():
-            target.unlink()
+        remove_draft(engine.source_dir, draft["id"])
         raise
     except Exception as error:
-        if target.exists() and size == 0:
-            target.unlink()
+        remove_draft(engine.source_dir, draft["id"])
         raise HTTPException(status_code=503, detail=f"上传失败：{error}") from error
     finally:
         await file.close()
+
+
+@app.post("/api/admin/documents/{record_id}/publish")
+def publish_document(record_id: str, request: Request):
+    user = require_admin(request)
+    try:
+        record = begin_publish(engine.source_dir, record_id)
+        set_document_access(record["file_name"], record["access_scope"], record["departments"])
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    def work(progress):
+        try:
+            if record["storage"] == "cloud":
+                progress(15, "正在上传云端资料库")
+                config = s3_config(record.get("cloud_config_id"))
+                import boto3
+                client = boto3.client(
+                    "s3",
+                    region_name=config.get("region") or None,
+                    endpoint_url=config.get("endpoint_url") or None,
+                    aws_access_key_id=config["access_key"],
+                    aws_secret_access_key=config["secret_key"],
+                )
+                key = (config.get("prefix", "knowledge-base").strip("/") + "/" + record["file_name"]).lstrip("/")
+                client.upload_file(record["stored_path"], config["bucket"], key)
+            progress(45, "正在解析文档并生成索引")
+            engine.load(force=True)
+            finish_publish(engine.source_dir, record_id)
+            progress(95, "资料已经发布")
+            log_event(user["username"], "document_publish", record["file_name"], details={"storage": record["storage"], "access_scope": record["access_scope"]})
+            return {"record_id": record_id, "file_name": record["file_name"], **engine.status()}
+        except Exception as error:
+            finish_publish(engine.source_dir, record_id, error)
+            log_event(user["username"], "document_publish", record["file_name"], result="failed", details={"error": str(error)})
+            raise
+
+    task_id = submit_task("document_publish", record["file_name"], user["username"], work)
+    return {"ok": True, "task_id": task_id, "record_id": record_id}
+
+
+@app.post("/api/admin/documents/{record_id}/restore")
+def restore_recycled_document(record_id: str, request: Request):
+    user = require_admin(request)
+    try:
+        record = restore_document(engine.source_dir, record_id)
+        set_document_access(record["file_name"], record["access_scope"], record["departments"])
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    def work(progress):
+        progress(30, "正在恢复资料索引")
+        engine.load(force=True)
+        progress(95, "资料已经恢复")
+        log_event(user["username"], "document_restore", record["file_name"])
+        return {"record_id": record_id, "file_name": record["file_name"], **engine.status()}
+
+    task_id = submit_task("document_restore", record["file_name"], user["username"], work)
+    return {"ok": True, "task_id": task_id}
+
+
+@app.delete("/api/admin/documents/{record_id}/purge")
+def permanently_delete_document(record_id: str, request: Request):
+    user = require_admin(request)
+    try:
+        record = purge_document(engine.source_dir, record_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    remove_document_access(record["file_name"])
+    log_event(user["username"], "document_purge", record["file_name"])
+    return {"ok": True, "file_name": record["file_name"]}
+
+
+@app.get("/api/admin/tasks")
+def background_tasks(request: Request, limit: int = 100):
+    require_admin(request)
+    return {"items": list_tasks(limit)}
+
+
+@app.get("/api/admin/tasks/{task_id}")
+def background_task(task_id: str, request: Request):
+    require_admin(request)
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="后台任务不存在")
+    return task
 
 
 @app.post("/api/ask")
@@ -468,7 +546,12 @@ def create_or_update_user(data: UserRequest, request: Request):
 
 
 def _library_items(user):
-    engine.load()
+    try:
+        engine.load()
+    except RuntimeError:
+        engine.clear()
+    workflow = list_records(engine.source_dir)
+    workflow_by_name = {item["file_name"]: item for item in workflow if item["status"] == "published"}
     grouped = {}
     for item in engine.documents:
         name = item["file_name"]
@@ -484,6 +567,8 @@ def _library_items(user):
             "source_type": "online" if str(item.get("file_path", "")).startswith("online://") else "local",
             "locations": 0,
             "preview": "",
+            "status": "published",
+            "workflow_id": workflow_by_name.get(name, {}).get("id"),
         })
         record["locations"] += 1
         if len(record["preview"]) < 1200:
@@ -492,7 +577,28 @@ def _library_items(user):
             acl = get_document_access(name, item)
             record["access_scope"] = acl["scope"]
             record["departments"] = acl.get("departments", [])
-    return sorted(grouped.values(), key=lambda value: value["file_name"].lower())
+    if user.get("role") == "admin":
+        for item in workflow:
+            if item["status"] == "published":
+                continue
+            grouped[f"workflow://{item['id']}"] = {
+                "document_id": item["id"],
+                "workflow_id": item["id"],
+                "file_name": item["file_name"],
+                "file_type": Path(item["file_name"]).suffix.lower().lstrip(".") or "文件",
+                "version_label": None,
+                "document_kind": "full",
+                "source_type": "workflow",
+                "locations": 0,
+                "preview": item.get("error") or "尚未发布，不会进入员工检索结果。",
+                "access_scope": item["access_scope"],
+                "departments": item["departments"],
+                "status": item["status"],
+                "created_at": item["created_at"],
+                "updated_at": item["updated_at"],
+                "size": item["size"],
+            }
+    return sorted(grouped.values(), key=lambda value: (value.get("status") != "draft", value["file_name"].lower()))
 
 
 @app.get("/api/library")
@@ -535,24 +641,26 @@ def delete_document(data: DeleteDocumentRequest, request: Request):
         raise HTTPException(status_code=404, detail="没有找到该资料，可能已经被删除")
     file_path = str(item["file_path"])
     name = item["file_name"]
+    recycled_id = None
     if file_path.startswith("online://"):
         parts = file_path.split("/", 3)
         provider = parts[2] if len(parts) > 2 else ""
         if not delete_online_source(provider, name):
             raise HTTPException(status_code=404, detail="没有找到对应的在线资料连接")
+        remove_document_access(name)
     else:
-        target = Path(file_path).resolve()
-        root = engine.source_dir.resolve()
-        if not target.is_relative_to(root) or not target.is_file():
-            raise HTTPException(status_code=400, detail="资料文件路径无效")
-        target.unlink()
-    remove_document_access(name)
+        acl = get_document_access(name, item)
+        try:
+            recycled_id = recycle_document(engine.source_dir, name, file_path, acl["scope"], acl.get("departments", []), user["username"])
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
     try:
         engine.load(force=True)
     except RuntimeError:
         engine.clear()
-    log_event(user["username"], "document_delete", name)
-    return {"ok": True, "file_name": name}
+    event = "document_recycle" if recycled_id else "document_delete"
+    log_event(user["username"], event, name)
+    return {"ok": True, "file_name": name, "record_id": recycled_id, "status": "recycled" if recycled_id else "deleted"}
 
 
 @app.get("/api/admin/dashboard")
@@ -593,13 +701,13 @@ def export_audit(request: Request):
 @app.get("/api/admin/evaluations")
 def evaluations(request: Request):
     require_admin(request)
-    return {"items": list_evaluation_cases(), "summary": evaluation_summary()}
+    return {"items": list_evaluation_cases(), "summary": evaluation_summary(), "recent_runs": list_evaluation_runs(50)}
 
 
 @app.post("/api/admin/evaluations")
 def create_evaluation(data: EvaluationCaseRequest, request: Request):
     user = require_admin(request)
-    case_id = add_evaluation_case(data.question, data.expected_file)
+    case_id = add_evaluation_case(data.question, data.expected_file, data.expected_terms, data.forbidden_terms)
     log_event(user["username"], "evaluation_case_add", data.expected_file)
     return {"ok": True, "id": case_id}
 
@@ -607,7 +715,7 @@ def create_evaluation(data: EvaluationCaseRequest, request: Request):
 @app.put("/api/admin/evaluations/{case_id}")
 def edit_evaluation(case_id: str, data: EvaluationCaseRequest, request: Request):
     user = require_admin(request)
-    if not update_evaluation_case(case_id, data.question, data.expected_file, data.enabled):
+    if not update_evaluation_case(case_id, data.question, data.expected_file, data.enabled, data.expected_terms, data.forbidden_terms):
         raise HTTPException(status_code=404, detail="评测题不存在")
     log_event(user["username"], "evaluation_case_update", data.expected_file)
     return {"ok": True}
@@ -639,15 +747,35 @@ def version_diff(request: Request, first: str, second: str):
 def run_evaluations(request: Request):
     user = require_admin(request)
     cases = [item for item in list_evaluation_cases() if item["enabled"]]
-    results = []
-    for case in cases:
-        started = time.time()
-        retrieval = engine.retrieve(case["question"], user)
-        files = list(dict.fromkeys(item["file_name"] for item in retrieval["results"]))
-        expected = case["expected_file"].lower()
-        passed = any(expected in name.lower() for name in files)
-        latency = int((time.time() - started) * 1000)
-        save_evaluation_run(case["id"], passed, files, retrieval["best_score"], latency)
-        results.append({"case_id": case["id"], "question": case["question"], "expected_file": case["expected_file"], "matched_files": files, "passed": passed, "best_score": retrieval["best_score"], "latency_ms": latency})
-    log_event(user["username"], "evaluation_run", details={"cases": len(results), "passed": sum(item["passed"] for item in results)})
-    return {"items": results, "summary": evaluation_summary()}
+
+    def work(progress):
+        results = []
+        total = max(len(cases), 1)
+        for index, case in enumerate(cases, 1):
+            progress(int((index - 1) / total * 90), f"正在评测第 {index}/{len(cases)} 题")
+            started = time.time()
+            answer_result = engine.ask(case["question"], user)
+            files = list(dict.fromkeys(item["file_name"] for item in answer_result.get("sources", [])))
+            answer = answer_result.get("answer", "")
+            expected = case["expected_file"].lower()
+            failures = []
+            if not any(expected in name.lower() for name in files):
+                failures.append("未命中期望文件")
+            for term in case.get("expected_terms", []):
+                if term.lower() not in answer.lower():
+                    failures.append(f"答案缺少：{term}")
+            for term in case.get("forbidden_terms", []):
+                if term.lower() in answer.lower():
+                    failures.append(f"答案包含禁用内容：{term}")
+            if not answer_result.get("grounded"):
+                failures.append("答案未通过证据核验")
+            passed = not failures
+            latency = int((time.time() - started) * 1000)
+            best_score = max([float(item.get("rerank_score", 0.0)) for item in answer_result.get("sources", [])] or [0.0])
+            save_evaluation_run(case["id"], passed, files, best_score, latency, answer, failures)
+            results.append({"case_id": case["id"], "question": case["question"], "expected_file": case["expected_file"], "matched_files": files, "answer": answer, "failures": failures, "passed": passed, "best_score": best_score, "latency_ms": latency})
+        log_event(user["username"], "evaluation_run", details={"cases": len(results), "passed": sum(item["passed"] for item in results)})
+        return {"items": results, "summary": evaluation_summary()}
+
+    task_id = submit_task("evaluation_run", f"{len(cases)} 道评测题", user["username"], work)
+    return {"ok": True, "task_id": task_id, "cases": len(cases)}

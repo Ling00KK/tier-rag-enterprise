@@ -14,6 +14,12 @@ _audit_lock = threading.Lock()
 _audit_health = {"healthy": True, "last_error": None, "last_failed_at": None}
 
 
+def _ensure_column(database, table, column, declaration):
+    columns = {row["name"] for row in database.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        database.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+
 def _path():
     configured = os.getenv("ADMIN_DB_PATH")
     if configured:
@@ -33,6 +39,10 @@ def _database():
         database.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at DESC)")
         database.execute("CREATE TABLE IF NOT EXISTS evaluation_cases (id TEXT PRIMARY KEY, created_at REAL NOT NULL, question TEXT NOT NULL, expected_file TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)")
         database.execute("CREATE TABLE IF NOT EXISTS evaluation_runs (id TEXT PRIMARY KEY, created_at REAL NOT NULL, case_id TEXT NOT NULL, passed INTEGER NOT NULL, matched_files TEXT NOT NULL, best_score REAL NOT NULL, latency_ms INTEGER NOT NULL)")
+        _ensure_column(database, "evaluation_cases", "expected_terms", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(database, "evaluation_cases", "forbidden_terms", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(database, "evaluation_runs", "answer", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(database, "evaluation_runs", "failures", "TEXT NOT NULL DEFAULT '[]'")
         database.execute("CREATE TABLE IF NOT EXISTS answer_feedback (id TEXT PRIMARY KEY, created_at REAL NOT NULL, answer_id TEXT NOT NULL UNIQUE, username TEXT NOT NULL, question_hash TEXT NOT NULL, helpful INTEGER NOT NULL, comment TEXT)")
         yield database
         database.commit()
@@ -68,22 +78,28 @@ def list_audit(limit=100):
     return [{**dict(row), "details": json.loads(row["details"] or "{}") } for row in rows]
 
 
-def add_evaluation_case(question, expected_file):
+def add_evaluation_case(question, expected_file, expected_terms=None, forbidden_terms=None):
     case_id = uuid.uuid4().hex
     with _database() as database:
-        database.execute("INSERT INTO evaluation_cases VALUES (?, ?, ?, ?, 1)", (case_id, time.time(), question.strip(), expected_file.strip()))
+        database.execute(
+            "INSERT INTO evaluation_cases (id, created_at, question, expected_file, enabled, expected_terms, forbidden_terms) VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (case_id, time.time(), question.strip(), expected_file.strip(), json.dumps(expected_terms or [], ensure_ascii=False), json.dumps(forbidden_terms or [], ensure_ascii=False)),
+        )
     return case_id
 
 
 def list_evaluation_cases():
     with _database() as database:
-        rows = database.execute("SELECT id, created_at, question, expected_file, enabled FROM evaluation_cases ORDER BY created_at DESC").fetchall()
-    return [dict(row) for row in rows]
+        rows = database.execute("SELECT id, created_at, question, expected_file, enabled, expected_terms, forbidden_terms FROM evaluation_cases ORDER BY created_at DESC").fetchall()
+    return [{**dict(row), "expected_terms": json.loads(row["expected_terms"] or "[]"), "forbidden_terms": json.loads(row["forbidden_terms"] or "[]")} for row in rows]
 
 
-def update_evaluation_case(case_id, question, expected_file, enabled=True):
+def update_evaluation_case(case_id, question, expected_file, enabled=True, expected_terms=None, forbidden_terms=None):
     with _database() as database:
-        result = database.execute("UPDATE evaluation_cases SET question=?, expected_file=?, enabled=? WHERE id=?", (question.strip(), expected_file.strip(), int(enabled), case_id))
+        result = database.execute(
+            "UPDATE evaluation_cases SET question=?, expected_file=?, enabled=?, expected_terms=?, forbidden_terms=? WHERE id=?",
+            (question.strip(), expected_file.strip(), int(enabled), json.dumps(expected_terms or [], ensure_ascii=False), json.dumps(forbidden_terms or [], ensure_ascii=False), case_id),
+        )
     return result.rowcount > 0
 
 
@@ -106,9 +122,27 @@ def feedback_summary(limit=100):
     return {"total": total["total"], "helpful": total["helpful"], "helpful_rate": round(total["helpful"] / total["total"] * 100, 1) if total["total"] else None, "items": [dict(row) for row in rows]}
 
 
-def save_evaluation_run(case_id, passed, matched_files, best_score, latency_ms):
+def save_evaluation_run(case_id, passed, matched_files, best_score, latency_ms, answer="", failures=None):
     with _database() as database:
-        database.execute("INSERT INTO evaluation_runs VALUES (?, ?, ?, ?, ?, ?, ?)", (uuid.uuid4().hex, time.time(), case_id, int(passed), json.dumps(matched_files, ensure_ascii=False), float(best_score), int(latency_ms)))
+        database.execute(
+            "INSERT INTO evaluation_runs (id, created_at, case_id, passed, matched_files, best_score, latency_ms, answer, failures) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (uuid.uuid4().hex, time.time(), case_id, int(passed), json.dumps(matched_files, ensure_ascii=False), float(best_score), int(latency_ms), (answer or "")[:5000], json.dumps(failures or [], ensure_ascii=False)),
+        )
+
+
+def list_evaluation_runs(limit=100):
+    with _database() as database:
+        rows = database.execute(
+            """SELECT r.created_at, r.case_id, c.question, r.passed, r.matched_files,
+                      r.best_score, r.latency_ms, r.answer, r.failures
+               FROM evaluation_runs r LEFT JOIN evaluation_cases c ON c.id=r.case_id
+               ORDER BY r.created_at DESC LIMIT ?""",
+            (min(max(int(limit), 1), 500),),
+        ).fetchall()
+    return [
+        {**dict(row), "matched_files": json.loads(row["matched_files"] or "[]"), "failures": json.loads(row["failures"] or "[]")}
+        for row in rows
+    ]
 
 
 def evaluation_summary():

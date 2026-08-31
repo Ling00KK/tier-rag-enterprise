@@ -16,3 +16,11 @@ __pycache__/
 *.tar
 *.tar.gz
 deploy-*/
+*.sqlite3
+*.sqlite3-*
+*.db
+.document-workflow/
+.env.*
+!.env.example
+*.pem
+*.key
